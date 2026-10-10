@@ -1,8 +1,9 @@
-from mcp.server.fastmcp import FastMCP
 
-mcp = FastMCP("customer-profile-tools")
+import os
 
+from mcp.server.mcpserver import MCPServer
 
+# Synthetic data only. No real customer information.
 CUSTOMERS = {
     "CUST-1001": {
         "customer_id": "CUST-1001",
@@ -12,10 +13,12 @@ CUSTOMERS = {
     }
 }
 
+mcp = MCPServer("customer-profile-tools")
+
 
 @mcp.tool()
 def read_customer_profile(customer_id: str) -> dict:
-    """Return a synthetic customer profile."""
+    """Retrieve a synthetic customer profile."""
 
     profile = CUSTOMERS.get(customer_id)
 
@@ -36,7 +39,7 @@ def update_customer_profile(
     customer_id: str,
     email: str | None = None,
 ) -> dict:
-    """Simulate a customer profile update."""
+    """Simulate a customer profile update without modifying data."""
 
     if customer_id not in CUSTOMERS:
         return {
@@ -52,4 +55,11 @@ def update_customer_profile(
 
 
 if __name__ == "__main__":
-    mcp.run()
+    mcp.run(
+        transport="streamable-http",
+        host="0.0.0.0",
+        port=int(os.getenv("PORT", "8080")),
+        streamable_http_path="/mcp",
+        stateless_http=True,
+        json_response=True,
+    )
