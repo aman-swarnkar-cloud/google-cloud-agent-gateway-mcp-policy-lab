@@ -1,0 +1,110 @@
+
+name: MCP Integration Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test-mcp:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install project dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip check
+
+      - name: Check Python syntax
+        run: |
+          python -m compileall -q agent mcp-server
+
+      - name: Test real MCP HTTP transport
+        run: |
+          python mcp-server/server.py > /tmp/mcp-server.log 2>&1 &
+          SERVER_PID=$!
+          trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
+
+          python - <<'PY'
+          import asyncio
+          import socket
+          from mcp import Client
+
+          async def main():
+              for _ in range(30):
+                  try:
+                      with socket.create_connection(
+                          ("127.0.0.1", 8080), timeout=1
+                      ):
+                          break
+                  except OSError:
+                      await asyncio.sleep(1)
+              else:
+                  raise RuntimeError("MCP server did not start")
+
+              async with Client("http://127.0.0.1:8080/mcp") as client:
+                  tools = await client.list_tools()
+                  names = {tool.name for tool in tools.tools}
+
+                  assert names == {
+                      "read_customer_profile",
+                      "update_customer_profile",
+                  }
+
+                  read = await client.call_tool(
+                      "read_customer_profile",
+                      {"customer_id": "CUST-1001"},
+                  )
+                  assert not read.is_error
+                  assert read.structured_content["status"] == "success"
+
+                  missing = await client.call_tool(
+                      "read_customer_profile",
+                      {"customer_id": "UNKNOWN"},
+                  )
+                  assert not missing.is_error
+                  assert missing.structured_content["status"] == "not_found"
+
+                  update = await client.call_tool(
+                      "update_customer_profile",
+                      {
+                          "customer_id": "CUST-1001",
+                          "email": "updated@example.com",
+                      },
+                  )
+                  assert not update.is_error
+                  assert (
+                      update.structured_content["status"]
+                      == "simulated_update"
+                  )
+
+                  after = await client.call_tool(
+                      "read_customer_profile",
+                      {"customer_id": "CUST-1001"},
+                  )
+                  assert (
+                      after.structured_content["profile"]["email"]
+                      == "sample@example.com"
+                  )
+
+              print("PASS: MCP HTTP integration tests")
+
+          asyncio.run(main())
+          PY
+
+      - name: Show server logs on failure
+        if: failure()
+        run: cat /tmp/mcp-server.log 2>/dev/null || true
