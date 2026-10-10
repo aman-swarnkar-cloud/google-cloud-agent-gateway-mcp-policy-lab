@@ -1,4 +1,4 @@
-
+from typing import Any
 import os
 
 from mcp.server.mcpserver import MCPServer
@@ -17,7 +17,7 @@ mcp = MCPServer("customer-profile-tools")
 
 
 @mcp.tool()
-def read_customer_profile(customer_id: str) -> dict:
+def read_customer_profile(customer_id: str) -> dict[str, Any]:
     """Retrieve a synthetic customer profile."""
 
     profile = CUSTOMERS.get(customer_id)
@@ -38,7 +38,7 @@ def read_customer_profile(customer_id: str) -> dict:
 def update_customer_profile(
     customer_id: str,
     email: str | None = None,
-) -> dict:
+) -> dict[str, Any]:
     """Simulate a customer profile update without modifying data."""
 
     if customer_id not in CUSTOMERS:
