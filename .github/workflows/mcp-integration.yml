@@ -117,7 +117,28 @@ jobs:
             mcp-policy-lab:test
 
           trap 'docker logs mcp-container-test; docker rm -f mcp-container-test >/dev/null' EXIT
+          # Wait until the MCP application has actually started.
+          for attempt in $(seq 1 30); do
+            if docker logs mcp-container-test 2>&1 | grep -q "Application startup complete."; then
+              echo "MCP container is ready."
+              break
+            fi
 
+            if [ "$(docker inspect -f '{{.State.Running}}' mcp-container-test)" != "true" ]; then
+              echo "MCP container exited unexpectedly."
+              docker logs mcp-container-test
+              exit 1
+            fi
+
+            sleep 1
+          done
+
+          # Fail with diagnostic logs if startup was unsuccessful.
+          if ! docker logs mcp-container-test 2>&1 | grep -q "Application startup complete."; then
+            echo "MCP container failed to become ready within 30 seconds."
+            docker logs mcp-container-test
+            exit 1
+          fi
           python - <<'PY'
           import asyncio
           import socket
