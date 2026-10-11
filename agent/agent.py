@@ -74,6 +74,7 @@ root_agent = Agent(
     name="customer_profile_policy_agent",
     model=Gemini(
         model=MODEL,
+        api_version="v1",
         client_kwargs={
             "enterprise": True,
             "location": "global",
