@@ -73,7 +73,7 @@ customer_profile_tools = McpToolset(
 root_agent = Agent(
     name="customer_profile_policy_agent",
     model=Gemini(
-        model=MODEL,
+        model="gemini-3.8-flash",
         api_version="v1",
         client_kwargs={
             "enterprise": True,
