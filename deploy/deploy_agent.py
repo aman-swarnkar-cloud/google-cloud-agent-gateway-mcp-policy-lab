@@ -51,7 +51,7 @@ def build_config():
         ),
 
         "source_packages": [
-            str(agent_source)
+            "agent"
         ],
 
         "entrypoint_module": "agent.runtime_app",
