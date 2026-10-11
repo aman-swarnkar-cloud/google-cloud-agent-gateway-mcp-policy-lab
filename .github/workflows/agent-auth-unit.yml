@@ -1,0 +1,195 @@
+name: Agent Authentication Unit Tests
+
+on:
+  push:
+    paths:
+      - "agent/**"
+      - "requirements.txt"
+      - ".github/workflows/agent-auth-unit.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-agent-auth:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    env:
+      MCP_URL: https://customer-profile-mcp-governed-411006551002.us-central1.run.app/mcp
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install pinned dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip check
+
+      - name: Validate agent authentication
+        run: |
+          python - <<'PY'
+          import asyncio
+          import importlib.util
+          import os
+          from datetime import datetime, timedelta
+          from pathlib import Path
+          from unittest.mock import patch
+
+          from google.auth.credentials import Credentials
+          from google.auth.exceptions import RefreshError
+          from google.adk.tools.mcp_tool import McpToolset
+
+          class FakeCredentials(Credentials):
+              def __init__(self):
+                  super().__init__()
+                  self.refresh_count = 0
+                  self.fail_refresh = False
+
+              def refresh(self, request):
+                  self.refresh_count += 1
+
+                  if self.fail_refresh:
+                      raise RefreshError(
+                          "Synthetic token refresh failure"
+                      )
+
+                  self.token = (
+                      f"test-token-{self.refresh_count}"
+                  )
+                  self.expiry = (
+                      datetime.utcnow()
+                      + timedelta(minutes=10)
+                  )
+
+          def load_agent(name="policy_lab_agent"):
+              spec = importlib.util.spec_from_file_location(
+                  name,
+                  Path("agent/agent.py"),
+              )
+
+              module = importlib.util.module_from_spec(spec)
+              spec.loader.exec_module(module)
+              return module
+
+          agent = load_agent()
+
+          expected_audience = (
+              "https://customer-profile-mcp-governed-"
+              "411006551002.us-central1.run.app"
+          )
+
+          assert agent.MCP_AUDIENCE == expected_audience
+
+          print("PASS: Cloud Run token audience")
+
+          assert isinstance(
+              agent.customer_profile_tools,
+              McpToolset,
+          )
+
+          assert (
+              agent.customer_profile_tools.connection_params.url
+              == os.environ["MCP_URL"]
+          )
+
+          assert (
+              agent.root_agent.tools[0]
+              is agent.customer_profile_tools
+          )
+
+          print("PASS: MCP toolset construction")
+
+          credentials = FakeCredentials()
+
+          with patch(
+              "google.oauth2.id_token."
+              "fetch_id_token_credentials",
+              return_value=credentials,
+          ) as credential_factory:
+
+              first = agent.build_auth_headers()
+
+              assert first["authorization"] == (
+                  "Bearer test-token-1"
+              )
+
+              assert credentials.refresh_count == 1
+
+              print("PASS: Initial token retrieval")
+
+              second = agent.build_auth_headers()
+
+              assert second == first
+              assert credentials.refresh_count == 1
+
+              credential_factory.assert_called_once_with(
+                  audience=expected_audience
+              )
+
+              print("PASS: Credential caching")
+
+              credentials.expiry = (
+                  datetime.utcnow()
+                  - timedelta(minutes=5)
+              )
+
+              refreshed = agent.build_auth_headers()
+
+              assert refreshed["authorization"] == (
+                  "Bearer test-token-2"
+              )
+
+              assert credentials.refresh_count == 2
+
+              print("PASS: Expired token refresh")
+
+              async_headers = asyncio.run(
+                  agent.get_mcp_auth_headers(None)
+              )
+
+              assert async_headers["authorization"] == (
+                  "Bearer test-token-2"
+              )
+
+              print("PASS: Async authentication headers")
+
+              credentials.expiry = (
+                  datetime.utcnow()
+                  - timedelta(minutes=5)
+              )
+
+              credentials.fail_refresh = True
+
+              try:
+                  agent.build_auth_headers()
+              except RefreshError:
+                  print("PASS: Refresh failure propagation")
+              else:
+                  raise AssertionError(
+                      "Refresh failure was not propagated"
+                  )
+
+          with patch.dict(
+              os.environ,
+              {"MCP_URL": "http://insecure.example/mcp"},
+          ):
+              try:
+                  load_agent("invalid_url_agent")
+              except ValueError:
+                  print("PASS: Insecure URL rejected")
+              else:
+                  raise AssertionError(
+                      "Insecure MCP URL was accepted"
+                  )
+
+          print("ALL AGENT AUTHENTICATION TESTS PASSED")
+          PY
