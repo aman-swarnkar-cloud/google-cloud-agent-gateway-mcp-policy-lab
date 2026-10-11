@@ -3,6 +3,7 @@
 import logging
 
 import google.auth
+from google.auth import _agent_identity_utils
 from google.auth.transport import mtls
 
 from agentplatform.frameworks import AdkApp
@@ -36,6 +37,22 @@ def log_auth_diagnostics():
             backend._use_google_auth_async(),
             mtls.should_use_client_cert(),
             mtls.has_default_client_cert_source(),
+        )
+
+        cert, _ = (
+            _agent_identity_utils.get_agent_identity_certificate_and_bytes()
+        )
+
+        logging.warning(
+            "AGENT_BOUND_TOKEN_DIAGNOSTIC "
+            "agent_identity_cert_present=%s "
+            "bound_token_requested=%s",
+            cert is not None,
+            (
+                _agent_identity_utils.should_request_bound_token(cert)
+                if cert is not None
+                else False
+            ),
         )
 
     except Exception as exc:
