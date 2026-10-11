@@ -1,5 +1,11 @@
 """Agent Runtime entry point for the MCP Policy Lab."""
 
+import os
+
+os.environ[
+    "GOOGLE_API_PREVENT_AGENT_TOKEN_SHARING_FOR_GCP_SERVICES"
+] = "False"
+
 import logging
 
 import google.auth
