@@ -10,7 +10,7 @@ from google.adk.tools.mcp_tool import (
 )
 from google.auth.transport.requests import Request
 from google.oauth2 import id_token
-
+from google.adk.models.google_llm import Gemini
 
 MODEL = os.getenv("MODEL", "gemini-3.5-flash")
 
@@ -72,7 +72,13 @@ customer_profile_tools = McpToolset(
 
 root_agent = Agent(
     name="customer_profile_policy_agent",
-    model=MODEL,
+    model=Gemini(
+        model=MODEL,
+        client_kwargs={
+            "enterprise": True,
+            "location": "global",
+        },
+    ),
     description=(
         "Demonstrates policy-governed access to customer "
         "profile tools through Google Cloud Agent Gateway."
