@@ -107,6 +107,20 @@ jobs:
           )
 
           print("PASS: MCP toolset construction")
+          
+          assert agent.root_agent.model.model == "gemini-3.5-flash"
+          
+          assert (
+              agent.root_agent.model.client_kwargs["enterprise"]
+              is True
+          )
+          
+          assert (
+              agent.root_agent.model.client_kwargs["location"]
+              == "global"
+          )
+          
+          print("PASS: Global Gemini model configuration")
 
           credentials = FakeCredentials()
 
