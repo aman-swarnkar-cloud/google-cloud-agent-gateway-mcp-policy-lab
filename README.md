@@ -371,7 +371,6 @@ Templates use values such as:
 
 ```text
 ${PROJECT_ID}
-${PROJECT_NUMBER}
 ${REGION}
 ${RUNTIME_ID}
 ${AGENT_GATEWAY_NAME}
