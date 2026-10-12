@@ -1,0 +1,12 @@
+{
+  "tools": [
+    {
+      "name": "read_customer_profile",
+      "description": "Retrieve a synthetic customer profile."
+    },
+    {
+      "name": "update_customer_profile",
+      "description": "Simulate a customer profile update without modifying data."
+    }
+  ]
+}
