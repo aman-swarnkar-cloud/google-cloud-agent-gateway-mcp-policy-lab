@@ -1,0 +1,6 @@
+{
+  "policy": "projects/${PROJECT_ID}/locations/global/accessPolicies/${ACCESS_POLICY_NAME}",
+  "target": {
+    "resource": "//cloudresourcemanager.googleapis.com/projects/${PROJECT_ID}"
+  }
+}
