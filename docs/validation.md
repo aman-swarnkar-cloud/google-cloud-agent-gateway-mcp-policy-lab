@@ -549,7 +549,7 @@ Example:
 ```bash
 gcloud logging read \
   'resource.type="cloud_run_revision"
-   resource.labels.service_name="${MCP_SERVICE_NAME}"' \
+   resource.labels.service_name="${MCP_SERVICE}"' \
   --project="${PROJECT_ID}" \
   --freshness=30m \
   --limit=100 \
@@ -790,7 +790,7 @@ PROJECT_NUMBER
 REGION
 RUNTIME_ID
 MCP_URL
-MCP_SERVICE_NAME
+MCP_SERVICE
 AGENT_GATEWAY_NAME
 AUTHZ_EXTENSION_NAME
 AUTHZ_POLICY_NAME
