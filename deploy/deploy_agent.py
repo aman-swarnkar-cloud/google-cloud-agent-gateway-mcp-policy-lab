@@ -8,17 +8,19 @@ from agentplatform import types
 from agentplatform._genai.types.common import AgentRuntimeConfig
 
 
-PROJECT_ID = "genai-research-lab"
-REGION = "us-central1"
+import os
+
+PROJECT_ID = os.environ["GOOGLE_CLOUD_PROJECT"]
+REGION = os.getenv("GOOGLE_CLOUD_REGION", "us-central1")
+AGENT_GATEWAY_NAME = os.getenv(
+    "AGENT_GATEWAY_NAME",
+    "mcp-policy-gateway",
+)
+MCP_URL = os.environ["MCP_URL"]
 
 GATEWAY_RESOURCE = (
     f"projects/{PROJECT_ID}/locations/{REGION}/"
-    "agentGateways/mcp-policy-gateway"
-)
-
-MCP_URL = (
-    "https://customer-profile-mcp-governed-"
-    "411006551002.us-central1.run.app/mcp"
+    f"agentGateways/{AGENT_GATEWAY_NAME}"
 )
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
