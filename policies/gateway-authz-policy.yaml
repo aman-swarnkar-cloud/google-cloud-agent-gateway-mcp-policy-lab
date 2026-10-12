@@ -1,8 +1,8 @@
-name: mcp-policy-gateway-iap-authzpolicy
+name: ${AUTHZ_POLICY_NAME}
 
 target:
   resources:
-    - projects/genai-research-lab/locations/us-central1/agentGateways/mcp-policy-gateway
+    - projects/${PROJECT_ID}/locations/${REGION}/agentGateways/${AGENT_GATEWAY_NAME}
 
 policyProfile: REQUEST_AUTHZ
 
@@ -11,4 +11,4 @@ action: CUSTOM
 customProvider:
   authzExtension:
     resources:
-      - projects/genai-research-lab/locations/us-central1/authzExtensions/mcp-policy-gateway-iap-authzextension
+      - projects/${PROJECT_ID}/locations/${REGION}/authzExtensions/${AUTHZ_EXTENSION_NAME}
