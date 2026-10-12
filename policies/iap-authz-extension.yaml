@@ -1,4 +1,4 @@
-name: mcp-policy-gateway-iap-authzextension
+name: ${AUTHZ_EXTENSION_NAME}
 
 service: iap.googleapis.com
 
