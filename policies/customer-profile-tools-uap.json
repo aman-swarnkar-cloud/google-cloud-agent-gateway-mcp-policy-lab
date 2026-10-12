@@ -1,0 +1,70 @@
+[
+  {
+    "description": "Allow MCP discovery and handshake",
+    "effect": "ALLOW",
+    "principals": [
+      "principal://agents.global.proj-411006551002.system.id.goog/resources/aiplatform/projects/411006551002/locations/us-central1/reasoningEngines/5203918440397537280"
+    ],
+    "operation": {
+      "permissions": [
+        "iap.googleapis.com/resources.egressViaIAP"
+      ]
+    },
+    "conditions": {
+      "iap.googleapis.com": {
+        "expression": "destination.is_registered == true && destination.agent_registry.mcp_server.method != 'tools/call'"
+      }
+    }
+  },
+  {
+    "description": "Allow Gemini Vertex AI registered endpoint",
+    "effect": "ALLOW",
+    "principals": [
+      "principal://agents.global.proj-411006551002.system.id.goog/resources/aiplatform/projects/411006551002/locations/us-central1/reasoningEngines/5203918440397537280"
+    ],
+    "operation": {
+      "permissions": [
+        "iap.googleapis.com/resources.egressViaIAP"
+      ]
+    },
+    "conditions": {
+      "iap.googleapis.com": {
+        "expression": "destination.is_registered == true && destination.agent_registry.resource_type == 'ENDPOINT'"
+      }
+    }
+  },
+  {
+    "description": "Allow read_customer_profile",
+    "effect": "ALLOW",
+    "principals": [
+      "principal://agents.global.proj-411006551002.system.id.goog/resources/aiplatform/projects/411006551002/locations/us-central1/reasoningEngines/5203918440397537280"
+    ],
+    "operation": {
+      "permissions": [
+        "iap.googleapis.com/resources.egressViaIAP"
+      ]
+    },
+    "conditions": {
+      "iap.googleapis.com": {
+        "expression": "destination.is_registered == true && destination.agent_registry.mcp_server.method == 'tools/call' && destination.agent_registry.mcp_server.tool.name == 'read_customer_profile'"
+      }
+    }
+  },
+  {
+    "description": "Deny update_customer_profile",
+    "effect": "DENY",
+    "principals": [
+      "principal://agents.global.proj-411006551002.system.id.goog/resources/aiplatform/projects/411006551002/locations/us-central1/reasoningEngines/5203918440397537280"
+    ],
+    "operation": {
+      "permissions": [
+        "iap.googleapis.com/resources.egressViaIAP"
+      ]
+    },
+    "conditions": {
+      "iap.googleapis.com": {
+        "expression": "destination.is_registered == true && destination.agent_registry.mcp_server.method == 'tools/call' && destination.agent_registry.mcp_server.tool.name == 'update_customer_profile'"
+      }
+    }
+  }
+]
