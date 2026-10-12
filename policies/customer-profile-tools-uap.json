@@ -3,7 +3,7 @@
     "description": "Allow MCP discovery and handshake",
     "effect": "ALLOW",
     "principals": [
-      "principal://agents.global.proj-411006551002.system.id.goog/resources/aiplatform/projects/411006551002/locations/us-central1/reasoningEngines/5203918440397537280"
+      "principal://agents.global.proj-${PROJECT_NUMBER}.system.id.goog/resources/aiplatform/projects/${PROJECT_NUMBER}/locations/${REGION}/reasoningEngines/${RUNTIME_ID}"
     ],
     "operation": {
       "permissions": [
@@ -20,7 +20,7 @@
     "description": "Allow Gemini Vertex AI registered endpoint",
     "effect": "ALLOW",
     "principals": [
-      "principal://agents.global.proj-411006551002.system.id.goog/resources/aiplatform/projects/411006551002/locations/us-central1/reasoningEngines/5203918440397537280"
+      "principal://agents.global.proj-${PROJECT_NUMBER}.system.id.goog/resources/aiplatform/projects/${PROJECT_NUMBER}/locations/${REGION}/reasoningEngines/${RUNTIME_ID}"
     ],
     "operation": {
       "permissions": [
@@ -37,7 +37,7 @@
     "description": "Allow read_customer_profile",
     "effect": "ALLOW",
     "principals": [
-      "principal://agents.global.proj-411006551002.system.id.goog/resources/aiplatform/projects/411006551002/locations/us-central1/reasoningEngines/5203918440397537280"
+      "principal://agents.global.proj-${PROJECT_NUMBER}.system.id.goog/resources/aiplatform/projects/${PROJECT_NUMBER}/locations/${REGION}/reasoningEngines/${RUNTIME_ID}"
     ],
     "operation": {
       "permissions": [
@@ -54,7 +54,7 @@
     "description": "Deny update_customer_profile",
     "effect": "DENY",
     "principals": [
-      "principal://agents.global.proj-411006551002.system.id.goog/resources/aiplatform/projects/411006551002/locations/us-central1/reasoningEngines/5203918440397537280"
+      "principal://agents.global.proj-${PROJECT_NUMBER}.system.id.goog/resources/aiplatform/projects/${PROJECT_NUMBER}/locations/${REGION}/reasoningEngines/${RUNTIME_ID}"
     ],
     "operation": {
       "permissions": [
