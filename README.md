@@ -1,242 +1,482 @@
 # Google Cloud Agent Gateway MCP Policy Lab
 
-A hands-on reference implementation for governing AI agent access to MCP tools using the Google Cloud agent stack.
+A validated reference implementation for enforcing fine-grained MCP tool authorization for AI agents on Google Cloud.
 
-The lab uses:
+This lab demonstrates how a Google ADK agent running on Agent Runtime can use its own Agent Identity, access governed destinations through Agent Gateway, and have individual MCP tool calls allowed or denied by IAM Unified Access Policy.
 
-- **Google Agent Development Kit (ADK)** for agent implementation
-- **Gemini on Vertex AI** for model inference
-- **Google Cloud Agent Runtime** for managed execution
-- **Agent Identity** for per-agent identity
-- **Agent Registry** for governed destination discovery where appropriate
-- **Agent Gateway** as the runtime policy-enforcement boundary
-- **IAM Unified Access Policies** for tool-level authorization
-- **Model Context Protocol (MCP)** for exposing tools
-- **Cloud Logging and audit evidence** to validate policy outcomes
+The final validated outcome is:
 
-## What this lab demonstrates
+```text
+read_customer_profile    → ALLOWED → EXECUTED
+update_customer_profile  → DENIED  → NOT EXECUTED
+```
 
-An enterprise AI agent may be technically capable of discovering and invoking multiple tools, but that does not mean it should be authorized to use every tool.
+All customer data used by the lab is synthetic.
 
-This lab explores a simple question:
+---
 
-> **How can we enforce which MCP tools a specific AI agent is allowed to invoke?**
+## What this repository demonstrates
 
-The agent is built using Google ADK and deployed on Google Cloud Agent Runtime.
+The implementation combines:
 
-The deployed agent operates with its own Agent Identity. Governed MCP traffic passes through Agent Gateway, where IAM access policy determines which tool invocations are permitted.
+- **Google Agent Development Kit (ADK)** — agent implementation
+- **Gemini on Vertex AI** — model inference
+- **Google Cloud Agent Runtime** — managed agent execution
+- **Agent Identity** — per-agent security identity
+- **Agent Registry** — governed destination and MCP tool metadata
+- **Agent Gateway** — runtime egress and enforcement boundary
+- **IAP Authorization Extension** — delegates Gateway authorization to IAP
+- **Network Security Authorization Policy** — attaches the authorization extension to the Gateway
+- **IAM Unified Access Policy (UAP)** — fine-grained authorization logic
+- **Model Context Protocol (MCP)** — tool discovery and execution
+- **Cloud Run** — synthetic MCP server
+- **Cloud Logging** — runtime, Gateway, IAP, and downstream execution evidence
 
-The reference scenario exposes two synthetic MCP tools:
+The core security principle is:
 
-- `read_customer_profile` — allowed
-- `update_customer_profile` — denied
+> **The model proposes an action. The authorization layer decides whether it may execute.**
 
-No real customer information is used.
+---
 
-## Reference architecture
+## Validated architecture
 
-The intended execution path is:
+```text
+User
+  ↓
+Google ADK Agent
+  ↓
+Agent Runtime
+  ↓
+Agent Identity
+  ↓
+Agent Gateway
+  ├─────────────────────────────┐
+  │                             │
+  ↓                             ↓
+Vertex AI                   MCP Server
+Gemini                      registered in
+                            Agent Registry
+                                ↓
+                            MCP tools
 
-**User → ADK Agent → Agent Runtime → Agent Identity → Agent Gateway → MCP Server → Tool**
+Authorization chain:
 
-Supporting governance components include:
+Agent Gateway
+  ↓
+Network Security Authorization Policy
+  ↓
+IAP Authorization Extension
+  ↓
+IAM Unified Access Policy
+  ↓
+ALLOW / DENY
+```
 
-- **Agent Registry** — destination discovery and governance metadata
-- **IAM Unified Access Policies** — runtime authorization rules
-- **Cloud Logging / audit evidence** — policy-decision and execution evidence
+See:
 
-The key architectural principle is that the agent may decide which tool it wants to invoke, but it does not make the final authorization decision.
+```text
+docs/architecture.md
+```
 
-## What we will validate
+for the detailed architecture.
 
-The lab will demonstrate:
-
-1. an agent built using Google ADK
-2. model interaction using Gemini on Vertex AI
-3. deployment on Google Cloud Agent Runtime
-4. the deployed agent operating with its own Agent Identity
-5. governed MCP access through Agent Gateway
-6. registration or governance of the MCP destination through Agent Registry where appropriate
-7. an allow policy for an approved MCP tool
-8. a restrictive policy for another MCP tool
-9. policy evaluation in dry-run mode before enforcement
-10. enforcement of allowed and denied tool calls
-11. logging and audit evidence showing the resulting policy decisions
+---
 
 ## Reference scenario
 
-The MCP server exposes two tools.
+The MCP server exposes two synthetic tools.
 
 ### `read_customer_profile`
 
-A read-only tool that returns a synthetic customer profile.
+Returns a synthetic customer profile.
 
-Expected policy outcome:
+Policy outcome:
 
-**Allowed**
+```text
+ALLOW
+```
+
+Validated result:
+
+```text
+Tool executed successfully.
+```
 
 ### `update_customer_profile`
 
-A simulated mutation tool representing a higher-risk operation.
+Simulates a higher-risk mutation operation.
 
-Expected policy outcome:
+Policy outcome:
 
-**Denied**
+```text
+DENY
+```
 
-The purpose is not to model a customer-management application.
+Validated result:
 
-The two tools simply provide an easy way to demonstrate different authorization outcomes against the same MCP destination.
+```text
+The model selected the tool,
+but the request was blocked before the update reached Cloud Run.
+```
 
-## Security boundary
+---
 
-This lab is built around one distinction:
+## Tool discovery is not authorization
 
-> **Tool discovery is not tool authorization.**
+MCP discovery operations must be permitted independently of tool execution.
 
-The ADK agent may know that both tools exist.
+The validated policy permits:
 
-The model may even determine that calling `update_customer_profile` would satisfy a user request.
+```text
+initialize
+notifications/initialized
+tools/list
+```
 
-That does not mean the operation should execute.
+but applies separate policy to:
 
-The authorization boundary exists outside the model's reasoning loop:
+```text
+tools/call
+```
 
-**Agent proposes action → Agent Gateway evaluates policy → approved action executes**
+This allows an agent to discover a tool without automatically being authorized to execute it.
 
-A restricted action should be blocked by policy even if the agent attempts to invoke it.
+---
 
-## Policy lifecycle
+## Fine-grained authorization
 
-The intended policy lifecycle is:
+The validated UAP contains four logical rules:
 
-**Define → Dry run → Observe → Validate → Enforce → Verify**
+```text
+1. ALLOW registered MCP discovery and handshake traffic
+2. ALLOW registered Vertex AI endpoints
+3. ALLOW tools/call → read_customer_profile
+4. DENY  tools/call → update_customer_profile
+```
 
-Policy changes should first be evaluated in dry-run mode.
+The validated tool-level CEL pattern is:
 
-This allows the expected allow and deny decisions to be observed before the policy is moved into enforcement mode.
+```text
+destination.is_registered == true &&
+destination.agent_registry.mcp_server.method == 'tools/call' &&
+destination.agent_registry.mcp_server.tool.name == '<TOOL_NAME>'
+```
 
-The lab will then demonstrate both outcomes.
+The UAP permission is:
 
-### Allowed path
+```text
+iap.googleapis.com/resources.egressViaIAP
+```
 
-**ADK Agent → Agent Identity → Agent Gateway → policy allows → MCP → `read_customer_profile`**
+---
 
-Result:
+## Governance resources
 
-**Tool executes**
+The implementation uses four separate governance resources.
 
-### Denied path
+### IAP Authorization Extension
 
-**ADK Agent → Agent Identity → Agent Gateway → policy denies → `update_customer_profile`**
+Connects Agent Gateway authorization to IAP.
 
-Result:
+Repository artifact:
 
-**Request is blocked before the restricted tool executes**
+```text
+policies/iap-authz-extension.yaml
+```
 
-## Why Agent Identity matters
+Validated configuration:
 
-The policy boundary should be able to identify which agent is attempting the operation.
+```text
+service = iap.googleapis.com
+failOpen = false
+timeout = 1s
+iapPolicyVersion = V2
+```
 
-Using a distinct Agent Identity provides a clearer authorization boundary than relying on one broadly shared runtime identity across multiple agents.
+### Network Security Authorization Policy
 
-This supports:
+Attaches the IAP Authorization Extension to the Agent Gateway.
 
-- per-agent least privilege
-- clearer attribution
-- agent-specific access policy
-- stronger auditability
-- safer agent-to-tool communication
+Repository artifact:
 
-## Why MCP is used
+```text
+policies/gateway-authz-policy.yaml
+```
 
-MCP provides the protocol through which tools are exposed and invoked.
+### IAM Unified Access Policy
 
-It does not replace authentication or authorization.
+Contains the agent, destination, protocol, and tool authorization rules.
 
-In this lab:
+Repository artifact:
 
-- **MCP** defines the tool interface
-- **Agent Identity** identifies the calling agent
-- **Agent Gateway** provides the runtime enforcement boundary
-- **IAM access policy** determines whether the requested invocation is permitted
+```text
+policies/customer-profile-tools-uap.json
+```
 
-These concerns remain intentionally separate.
+### IAM v3 Policy Binding
 
-## Design principles
+Binds the Unified Access Policy to the target project.
 
-### Authorization should not live inside the prompt
+Repository artifact:
 
-Prompt instructions such as:
+```text
+policies/customer-profile-uap-binding.json
+```
 
-> “Do not call this tool”
+---
 
-are not security controls.
+## Agent Identity
 
-The model can influence which action is proposed, but authorization must be enforced independently of model reasoning.
+The deployed Agent Runtime uses:
 
-### Least privilege should apply at the agent level
+```text
+AGENT_IDENTITY
+```
 
-Different agents may require different tool access even when they use the same MCP server.
+rather than relying on one broadly shared runtime identity.
 
-Permissions should reflect the responsibility of the individual agent.
+The UAP evaluates the specific Agent Identity principal.
 
-### Evaluate policy before execution
+The repository uses placeholders rather than committing environment-specific project and Runtime identifiers.
 
-A restricted operation should be rejected before the downstream tool performs the action.
+---
 
-### Start with dry-run policy evaluation
+## Agent Registry
 
-Policy behavior should be observed and validated before enforcement.
+The MCP server is registered with Agent Registry.
 
-### Keep audit evidence
+The tool metadata represented in:
 
-For an important tool invocation, the architecture should be able to answer:
+```text
+mcp-server/toolspec.json
+```
 
-- Which agent attempted the action?
-- Which destination was called?
-- Which tool was requested?
-- Which policy was evaluated?
-- Was the request allowed or denied?
-- Did the tool actually execute?
+contains:
 
-## Planned repository structure
+```text
+read_customer_profile
+update_customer_profile
+```
+
+Registration does not grant authorization.
+
+A registered tool may still be denied by UAP.
+
+---
+
+## Validated results
+
+```text
+Agent Runtime                            PASS
+Agent Identity                           PASS
+Agent Gateway ENFORCE                    PASS
+Registered Vertex AI endpoint            ALLOWED
+MCP initialize                           ALLOWED
+MCP notifications/initialized            ALLOWED
+MCP tools/list                           ALLOWED
+read_customer_profile                    ALLOWED + EXECUTED
+update_customer_profile                  DENIED
+Denied update reached Cloud Run          NO
+```
+
+Detailed validation evidence and troubleshooting notes are documented in:
+
+```text
+docs/validation.md
+```
+
+---
+
+## Bound-token compatibility finding
+
+The known-good configuration for this lab currently uses:
+
+```text
+GOOGLE_API_PREVENT_AGENT_TOKEN_SHARING_FOR_GCP_SERVICES=False
+```
+
+A controlled validation was performed with the Gateway and UAP unchanged:
+
+```text
+False
+→ read_customer_profile succeeds
+
+True
+→ Agent Gateway authorizes the Vertex request
+→ Vertex AI returns 401 UNAUTHENTICATED
+
+False
+→ read_customer_profile succeeds again
+```
+
+The failure therefore occurs after Gateway authorization and is associated with the authentication presented to Vertex AI rather than a UAP denial.
+
+This behavior has been reported separately to Google.
+
+The compatibility setting should be re-tested when the underlying platform behavior changes.
+
+See `docs/validation.md` for the complete evidence.
+
+---
+
+## Repository structure
 
 ```text
 google-cloud-agent-gateway-mcp-policy-lab/
-├── README.md
-├── LICENSE
+├── .github/
+│   └── workflows/
+│       ├── agent-auth-unit.yml
+│       └── mcp-integration.yml
+│
 ├── agent/
-│   └── ...
-├── mcp-server/
-│   └── ...
-├── policies/
-│   └── ...
+│   ├── __init__.py
+│   ├── agent.py
+│   ├── requirements.txt
+│   └── runtime_app.py
+│
+├── deploy/
+│   └── deploy_agent.py
+│
 ├── docs/
 │   ├── architecture.md
 │   └── validation.md
-└── tests/
-    └── ...
+│
+├── mcp-server/
+│   ├── Dockerfile
+│   ├── server.py
+│   └── toolspec.json
+│
+├── policies/
+│   ├── customer-profile-tools-uap.json
+│   ├── customer-profile-uap-binding.json
+│   ├── gateway-authz-policy.yaml
+│   └── iap-authz-extension.yaml
+│
+├── tests/
+│   └── test_agent_auth.py
+│
+├── LICENSE
+├── README.md
+└── requirements.txt
 ```
 
-The structure will evolve as the implementation is added.
+---
+
+## Environment-specific configuration
+
+The repository intentionally does not contain the project-specific identifiers from the environment used during validation.
+
+Templates use values such as:
+
+```text
+${PROJECT_ID}
+${PROJECT_NUMBER}
+${REGION}
+${RUNTIME_ID}
+${AGENT_GATEWAY_NAME}
+${AUTHZ_EXTENSION_NAME}
+${AUTHZ_POLICY_NAME}
+${ACCESS_POLICY_NAME}
+${POLICY_BINDING_NAME}
+```
+
+The deployment code expects environment variables including:
+
+```text
+GOOGLE_CLOUD_PROJECT
+GOOGLE_CLOUD_REGION
+MCP_URL
+AGENT_GATEWAY_NAME
+```
+
+Render policy templates with the appropriate environment-specific values before deployment.
+
+---
+
+## Policy lifecycle
+
+The validated workflow is:
+
+```text
+Define
+  ↓
+Dry run / evaluate
+  ↓
+Observe
+  ↓
+Validate
+  ↓
+Enforce
+  ↓
+Verify downstream execution
+```
+
+Policy updates can require several minutes to propagate.
+
+Do not repeatedly rewrite a policy while propagation may still be occurring.
+
+---
+
+## Validation strategy
+
+Do not rely on a single log source.
+
+Correlate:
+
+```text
+Agent Runtime events
++
+Agent Gateway logs
++
+IAP audit logs
++
+Cloud Run request logs
+```
+
+This is particularly important when validating whether a denied tool actually reached the downstream service.
+
+---
+
+## Security principles demonstrated
+
+This implementation demonstrates that:
+
+- Agent Identity and tool authorization are separate concerns.
+- Tool discovery does not imply permission to execute a tool.
+- Prompt instructions are not authorization controls.
+- Model intent does not grant execution authority.
+- Read and mutation operations can receive different authorization outcomes.
+- Authorization can be applied to individual MCP tools.
+- Downstream execution should be independently verified.
+- Policy changes should be validated before being treated as production controls.
+
+---
+
+## Documentation
+
+Detailed architecture:
+
+```text
+docs/architecture.md
+```
+
+Complete validation, troubleshooting, known-good configuration, log queries, propagation findings, and bound-token experiment:
+
+```text
+docs/validation.md
+```
+
+---
 
 ## Scope
 
-This repository is a generic technical lab based on publicly documented Google Cloud capabilities and open standards.
+This repository is a generic technical reference implementation based on publicly documented Google Cloud capabilities and open standards.
 
-It does not represent any customer implementation, internal architecture, production environment, or proprietary dataset.
+It does not represent a customer architecture, proprietary implementation, production environment, or real customer dataset.
 
-All example data used by the lab is synthetic.
+All customer data in the lab is synthetic.
 
-## Current implementation status
-
-The repository is being built incrementally.
-
-The intended end state is a reproducible demonstration of:
-
-**ADK Agent + Agent Runtime + Agent Identity + Agent Gateway + IAM policy + MCP**
-
-with evidence showing that one tool invocation succeeds while another is blocked by policy.
+---
 
 ## Core takeaway
 
@@ -244,4 +484,4 @@ with evidence showing that one tool invocation succeeds while another is blocked
 
 The model proposes the action.
 
-The policy boundary decides whether the action is allowed.
+The policy boundary determines whether that action is allowed.
