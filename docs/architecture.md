@@ -242,7 +242,7 @@ The UAP therefore evaluates the deployed agent as its own security principal.
 The principal format used by the policy template is:
 
 ```text
-principal://agents.global.proj-${PROJECT_NUMBER}.system.id.goog/resources/aiplatform/projects/${PROJECT_NUMBER}/locations/${REGION}/reasoningEngines/${RUNTIME_ID}
+${AGENT_PRINCIPAL}
 ```
 
 This supports agent-specific least privilege rather than relying on one broadly shared identity.
