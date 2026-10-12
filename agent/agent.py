@@ -12,7 +12,7 @@ from google.auth.transport.requests import Request
 from google.oauth2 import id_token
 from google.adk.models.google_llm import Gemini
 
-MODEL = os.getenv("MODEL", "gemini-3.5-flash")
+MODEL = os.getenv("MODEL", "gemini-3.8-flash")
 
 MCP_URL = os.environ["MCP_URL"]
 
@@ -73,7 +73,7 @@ customer_profile_tools = McpToolset(
 root_agent = Agent(
     name="customer_profile_policy_agent",
     model=Gemini(
-        model="gemini-3.8-flash",
+        model=MODEL,
         api_version="v1",
         client_kwargs={
             "enterprise": True,
