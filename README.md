@@ -339,6 +339,7 @@ google-cloud-agent-gateway-mcp-policy-lab/
 │
 ├── docs/
 │   ├── architecture.md
+│   ├── deployment.md
 │   └── validation.md
 │
 ├── mcp-server/
@@ -453,6 +454,12 @@ This implementation demonstrates that:
 ---
 
 ## Documentation
+
+Reproducible deployment guide:
+
+```text
+docs/deployment.md
+```
 
 Detailed architecture:
 
