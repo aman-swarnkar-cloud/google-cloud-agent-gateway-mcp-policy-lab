@@ -280,10 +280,10 @@ The Agent Runtime uses:
 identity_type = AGENT_IDENTITY
 ```
 
-The UAP principal follows this structure:
+The UAP evaluates the Runtime's effective Agent Identity.
 
 ```text
-principal://agents.global.proj-${PROJECT_NUMBER}.system.id.goog/resources/aiplatform/projects/${PROJECT_NUMBER}/locations/${REGION}/reasoningEngines/${RUNTIME_ID}
+${AGENT_PRINCIPAL}
 ```
 
 This allows authorization to be evaluated for a specific deployed agent instead of relying on a broadly shared runtime identity.
