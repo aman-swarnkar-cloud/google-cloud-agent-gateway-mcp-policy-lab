@@ -1,0 +1,10 @@
+name: mcp-policy-gateway-iap-authzextension
+
+service: iap.googleapis.com
+
+failOpen: false
+
+timeout: 1s
+
+metadata:
+  iapPolicyVersion: "V2"
