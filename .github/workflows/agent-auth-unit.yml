@@ -17,7 +17,7 @@ jobs:
     timeout-minutes: 15
 
     env:
-      MCP_URL: https://customer-profile-mcp-governed-411006551002.us-central1.run.app/mcp
+      MCP_URL: https://example.run.app/mcp
 
     steps:
       - name: Checkout repository
@@ -82,10 +82,7 @@ jobs:
 
           agent = load_agent()
 
-          expected_audience = (
-              "https://customer-profile-mcp-governed-"
-              "411006551002.us-central1.run.app"
-          )
+          expected_audience = "https://example.run.app"
 
           assert agent.MCP_AUDIENCE == expected_audience
 
