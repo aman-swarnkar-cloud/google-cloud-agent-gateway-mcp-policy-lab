@@ -1,0 +1,14 @@
+name: mcp-policy-gateway-iap-authzpolicy
+
+target:
+  resources:
+    - projects/genai-research-lab/locations/us-central1/agentGateways/mcp-policy-gateway
+
+policyProfile: REQUEST_AUTHZ
+
+action: CUSTOM
+
+customProvider:
+  authzExtension:
+    resources:
+      - projects/genai-research-lab/locations/us-central1/authzExtensions/mcp-policy-gateway-iap-authzextension
