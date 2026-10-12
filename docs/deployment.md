@@ -115,21 +115,12 @@ gcloud config set project "${PROJECT_ID}"
 gcloud config set compute/region "${REGION}"
 ```
 
-Retrieve the numeric project number:
-
-```bash
-export PROJECT_NUMBER="$(
-  gcloud projects describe "${PROJECT_ID}" \
-    --format='value(projectNumber)'
-)"
-```
 
 Validate:
 
 ```bash
-printf 'PROJECT_ID=%s\nPROJECT_NUMBER=%s\nREGION=%s\n' \
+printf 'PROJECT_ID=%s\nREGION=%s\n' \
   "${PROJECT_ID}" \
-  "${PROJECT_NUMBER}" \
   "${REGION}"
 ```
 
