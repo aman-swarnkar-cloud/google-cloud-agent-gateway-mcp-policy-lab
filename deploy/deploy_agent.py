@@ -73,7 +73,7 @@ def build_config():
         "env_vars": {
             "MCP_URL": MCP_URL,
             "GOOGLE_GENAI_USE_VERTEXAI": "true",
-            "GOOGLE_API_PREVENT_AGENT_TOKEN_SHARING_FOR_GCP_SERVICES": "False",
+            #"GOOGLE_API_PREVENT_AGENT_TOKEN_SHARING_FOR_GCP_SERVICES": "False",
         },
 
         "min_instances": 0,
