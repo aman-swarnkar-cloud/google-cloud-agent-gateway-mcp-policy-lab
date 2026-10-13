@@ -2,11 +2,36 @@
   "tools": [
     {
       "name": "read_customer_profile",
-      "description": "Retrieve a synthetic customer profile."
+      "description": "Retrieve a synthetic customer profile.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "customer_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "customer_id"
+        ]
+      }
     },
     {
       "name": "update_customer_profile",
-      "description": "Simulate a customer profile update without modifying data."
+      "description": "Simulate a customer profile update without modifying data.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "customer_id": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "customer_id"
+        ]
+      }
     }
   ]
 }
