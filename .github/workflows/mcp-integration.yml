@@ -32,6 +32,91 @@ jobs:
         run: |
           python -m compileall -q agent mcp-server
 
+      - name: Validate Agent Registry MCP tool specification
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          path = Path("mcp-server/toolspec.json")
+          spec = json.loads(path.read_text())
+
+          tools = spec.get("tools")
+
+          assert isinstance(tools, list) and tools, (
+              "toolspec.json must contain a non-empty tools array"
+          )
+
+          by_name = {
+              tool.get("name"): tool
+              for tool in tools
+          }
+
+          expected_names = {
+              "read_customer_profile",
+              "update_customer_profile",
+          }
+
+          assert set(by_name) == expected_names, (
+              f"Unexpected tool set: {set(by_name)}"
+          )
+
+          for name, tool in by_name.items():
+              schema = tool.get("inputSchema")
+
+              assert isinstance(schema, dict), (
+                  f"{name}: inputSchema is required"
+              )
+
+              assert schema.get("type") == "object", (
+                  f"{name}: inputSchema.type must be object"
+              )
+
+              properties = schema.get("properties")
+              required = schema.get("required")
+
+              assert isinstance(properties, dict), (
+                  f"{name}: inputSchema.properties is required"
+              )
+
+              assert isinstance(required, list), (
+                  f"{name}: inputSchema.required must be a list"
+              )
+
+              assert "customer_id" in properties, (
+                  f"{name}: customer_id property is required"
+              )
+
+              assert (
+                  properties["customer_id"].get("type") == "string"
+              ), f"{name}: customer_id must be a string"
+
+              assert "customer_id" in required, (
+                  f"{name}: customer_id must be required"
+              )
+
+          update_schema = by_name[
+              "update_customer_profile"
+          ]["inputSchema"]
+
+          assert "email" in update_schema["properties"], (
+              "update_customer_profile: email property is required"
+          )
+
+          assert (
+              update_schema["properties"]["email"].get("type")
+              == "string"
+          ), "update_customer_profile: email must be a string"
+
+          assert "email" not in update_schema["required"], (
+              "update_customer_profile: email must remain optional"
+          )
+
+          print(
+              "PASS: Agent Registry MCP tool specification is valid"
+          )
+          PY
+
       - name: Test real MCP HTTP transport
         run: |
           python mcp-server/server.py > /tmp/mcp-server.log 2>&1 &
@@ -40,7 +125,10 @@ jobs:
 
           python - <<'PY'
           import asyncio
+          import json
           import socket
+          from pathlib import Path
+          
           from mcp import Client
 
           async def main():
@@ -57,12 +145,26 @@ jobs:
 
               async with Client("http://127.0.0.1:8080/mcp") as client:
                   tools = await client.list_tools()
-                  names = {tool.name for tool in tools.tools}
-
-                  assert names == {
+                  runtime_names = {tool.name for tool in tools.tools}
+                  
+                  toolspec = json.loads(
+                      Path("mcp-server/toolspec.json").read_text()
+                  )
+                  registry_names = {
+                      tool["name"]
+                      for tool in toolspec["tools"]
+                  }
+                  
+                  assert runtime_names == {
                       "read_customer_profile",
                       "update_customer_profile",
                   }
+                  
+                  assert runtime_names == registry_names, (
+                      "MCP server tools and Agent Registry toolspec.json "
+                      f"are out of sync: runtime={runtime_names}, "
+                      f"registry={registry_names}"
+                  )
 
                   read = await client.call_tool(
                       "read_customer_profile",
