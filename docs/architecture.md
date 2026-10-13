@@ -8,6 +8,7 @@ The key principle is:
 
 > **The model proposes the action. The authorization layer determines whether that action may execute.**
 
+
 ---
 
 ## 1. High-level architecture
