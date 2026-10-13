@@ -272,102 +272,82 @@ Creating a UAP does not by itself make the policy effective until the policy is 
 
 ---
 
-# 6. Agent Registry
+# 5. Agent Identity
 
-The MCP server is registered with Agent Registry.
-
-Its registered tool metadata includes:
+The Agent Runtime uses:
 
 ```text
-read_customer_profile
-update_customer_profile
+identity_type = AGENT_IDENTITY
 ```
 
-Repository representation:
+The Runtime receives an effective Agent Identity from Google Cloud.
+
+The Runtime API returns that identity in its raw resource form:
 
 ```text
-mcp-server/toolspec.json
+spec.effectiveIdentity
 ```
 
-The tool specification must include a valid `inputSchema` for every registered tool.
-
-For this lab:
+For example:
 
 ```text
-read_customer_profile
-→ requires customer_id
-
-update_customer_profile
-→ requires customer_id
-→ accepts email
+agents.global.<trust-domain>/resources/aiplatform/...
 ```
 
-A fresh-project deployment exposed that Agent Registry rejects an MCP tool specification when `inputSchema` is missing.
-
-The observed validation condition was equivalent to:
+Store this value as:
 
 ```text
-tools.0: inputSchema is required
-tools.1: inputSchema is required
+AGENT_EFFECTIVE_IDENTITY
 ```
 
-The repository now validates this requirement before registration:
-
-```bash
-jq -e 'all(.tools[]; has("inputSchema"))' mcp-server/toolspec.json
-```
-
-Expected:
+IAM, IAP, and Unified Access Policy require the corresponding principal representation:
 
 ```text
-true
+principal://agents.global.<trust-domain>/resources/aiplatform/...
 ```
-
-This is important because the MCP server implementation and the Agent Registry tool specification are separate artifacts.
-
-A tool existing in the running MCP server does not automatically make an incomplete static registry specification valid.
-
-The validated registration relationship is:
-
-```text
-MCP server implementation
-+
-toolspec.json
-+
-inputSchema
-→ Agent Registry registration
-```
-
-Registration and authorization remain separate concepts.
-
-Registration means the destination and tool metadata are known to Agent Registry.
-
-It does not grant permission to execute those tools.
 
 Therefore:
 
 ```text
-registered tool
-≠
-authorized tool
+AGENT_PRINCIPAL
+=
+principal://${AGENT_EFFECTIVE_IDENTITY}
 ```
 
-and the validated lab behavior remains:
+The two values represent the same Agent Identity but are not identical strings.
+
+The repository UAP template therefore uses:
 
 ```text
-read_customer_profile
-→ registered
-→ authorized
-→ executed
+${AGENT_PRINCIPAL}
 ```
 
-while:
+rather than the raw `spec.effectiveIdentity` value.
+
+The effective identity must be retrieved dynamically from the deployed Runtime.
+
+Do not derive the Agent Identity or trust domain from:
 
 ```text
-update_customer_profile
-→ registered
-→ denied by authorization policy
-→ not executed
+project number
+organization ID
+Runtime ID
+```
+
+because the trust-domain representation can differ between environments.
+
+This allows authorization to target the specific deployed agent instead of relying on a broadly shared runtime identity.
+
+If the Runtime is deleted and recreated, the new Runtime receives a new effective Agent Identity.
+
+The following references must then be updated:
+
+```text
+Cloud Run Invoker
+Agent Registry Viewer
+MCP resource IAP egress
+Vertex endpoint IAP egress
+Unified Access Policy principal
 ```
 
 ---
