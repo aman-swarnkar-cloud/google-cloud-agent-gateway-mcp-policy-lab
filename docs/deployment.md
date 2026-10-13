@@ -2026,3 +2026,521 @@ For the architecture, see:
 ```text
 docs/architecture.md
 ```
+
+---
+
+# 41. Clean up lab resources
+
+After completing the lab, remove the resources if they are no longer required.
+
+Cleanup is especially important for temporary test environments because the lab creates managed runtime, networking, registry, Cloud Run, IAM, and policy resources.
+
+## Option 1 — Delete a dedicated test project
+
+If the Google Cloud project was created exclusively for this lab and contains no other workloads, deleting the project is the simplest complete cleanup.
+
+First confirm the active project:
+
+```bash
+echo "${PROJECT_ID}"
+gcloud config get-value project
+```
+
+If the project is dedicated only to this lab:
+
+```bash
+gcloud projects delete "${PROJECT_ID}"
+```
+
+Do not delete the project if it contains any unrelated resources or workloads.
+
+If the project is shared, use the targeted cleanup procedure below.
+
+---
+
+## Option 2 — Remove only the lab resources
+
+Use this option when the lab was deployed into an existing or shared Google Cloud project.
+
+### 41.1 Confirm the target project
+
+Before running any destructive command, verify that all required deployment variables are still available in the current shell:
+
+```bash
+REQUIRED_VARS=(
+  PROJECT_ID
+  REGION
+  RUNTIME_RESOURCE
+  RUNTIME_ID
+  AGENT_PRINCIPAL
+  MCP_SERVICE
+  MCP_REGISTRY_SERVICE
+  VERTEX_ENDPOINT_SERVICE
+  MCP_SERVER_ID
+  VERTEX_ENDPOINT_ID
+  AGENT_GATEWAY_NAME
+  AUTHZ_POLICY_NAME
+  AUTHZ_EXTENSION_NAME
+  ACCESS_POLICY_NAME
+  POLICY_BINDING_NAME
+)
+
+MISSING_VARS=0
+
+for VAR_NAME in "${REQUIRED_VARS[@]}"; do
+  if [[ -z "${!VAR_NAME:-}" ]]; then
+    echo "ERROR: ${VAR_NAME} is not set."
+    MISSING_VARS=1
+  fi
+done
+
+if [[ "${MISSING_VARS}" -ne 0 ]]; then
+  echo "Cleanup stopped. Restore the missing deployment variables before continuing."
+  exit 1
+fi
+
+echo "PASS: Required cleanup variables are available."
+```
+
+This prevents cleanup commands from being run with incomplete resource identifiers.
+
+Display the important cleanup variables:
+
+```bash
+echo "PROJECT_ID=${PROJECT_ID}"
+echo "REGION=${REGION}"
+echo "RUNTIME_RESOURCE=${RUNTIME_RESOURCE}"
+echo "AGENT_PRINCIPAL=${AGENT_PRINCIPAL}"
+echo "MCP_SERVICE=${MCP_SERVICE}"
+echo "MCP_REGISTRY_SERVICE=${MCP_REGISTRY_SERVICE}"
+echo "VERTEX_ENDPOINT_SERVICE=${VERTEX_ENDPOINT_SERVICE}"
+echo "MCP_SERVER_ID=${MCP_SERVER_ID}"
+echo "VERTEX_ENDPOINT_ID=${VERTEX_ENDPOINT_ID}"
+echo "AGENT_GATEWAY_NAME=${AGENT_GATEWAY_NAME}"
+echo "AUTHZ_POLICY_NAME=${AUTHZ_POLICY_NAME}"
+echo "AUTHZ_EXTENSION_NAME=${AUTHZ_EXTENSION_NAME}"
+echo "ACCESS_POLICY_NAME=${ACCESS_POLICY_NAME}"
+echo "POLICY_BINDING_NAME=${POLICY_BINDING_NAME}"
+```
+
+Confirm that the active gcloud project matches:
+
+```bash
+gcloud config get-value project
+```
+
+Require an explicit confirmation before deleting resources:
+
+```bash
+read -r -p "Type the project ID to confirm cleanup: " CLEANUP_CONFIRM
+
+if [[ "${CLEANUP_CONFIRM}" != "${PROJECT_ID}" ]]; then
+  echo "Cleanup cancelled."
+  exit 1
+fi
+```
+
+Do not continue if the project or resource identifiers are incorrect.
+
+---
+
+## 41.2 Remove Agent Registry IAP egress bindings
+
+Remove the MCP server egress binding:
+
+```bash
+gcloud iap web remove-iam-policy-binding \
+  --project="${PROJECT_ID}" \
+  --resource-type=agent-registry \
+  --mcp-server="${MCP_SERVER_ID}" \
+  --region="${REGION}" \
+  --member="${AGENT_PRINCIPAL}" \
+  --role="roles/iap.egressor"
+```
+
+Remove the Vertex endpoint egress binding:
+
+```bash
+gcloud iap web remove-iam-policy-binding \
+  --project="${PROJECT_ID}" \
+  --resource-type=agent-registry \
+  --endpoint="${VERTEX_ENDPOINT_ID}" \
+  --region="${REGION}" \
+  --member="${AGENT_PRINCIPAL}" \
+  --role="roles/iap.egressor"
+```
+
+These commands remove only the resource-level bindings created for this lab.
+
+---
+
+## 41.3 Remove Agent Identity IAM bindings
+
+Remove Cloud Run Invoker from the MCP service:
+
+```bash
+gcloud run services remove-iam-policy-binding "${MCP_SERVICE}" \
+  --region="${REGION}" \
+  --project="${PROJECT_ID}" \
+  --member="${AGENT_PRINCIPAL}" \
+  --role="roles/run.invoker"
+```
+
+Remove Agent Registry Viewer from the project:
+
+```bash
+gcloud projects remove-iam-policy-binding "${PROJECT_ID}" \
+  --member="${AGENT_PRINCIPAL}" \
+  --role="roles/agentregistry.viewer"
+```
+
+---
+
+## 41.4 Delete the Agent Runtime
+
+The Runtime may contain child resources such as interactive sessions.
+
+Use the Agent Platform SDK with `force=True`:
+
+```bash
+python - <<'PY'
+import os
+import agentplatform
+
+project = os.environ["PROJECT_ID"]
+region = os.environ["REGION"]
+runtime_resource = os.environ["RUNTIME_RESOURCE"]
+
+client = agentplatform.Client(
+    project=project,
+    location=region,
+)
+
+client.runtimes.delete(
+    name=runtime_resource,
+    force=True,
+)
+
+print(f"Deleted Agent Runtime: {runtime_resource}")
+PY
+```
+
+Runtime deletion can involve managed child resources, so verify that the Runtime is gone before deleting the Agent Gateway. The Agent Platform SDK supports `force=True` for deletion when resources such as sessions exist. :contentReference[oaicite:1]{index=1}
+
+Wait for deletion to become visible:
+
+```bash
+for ATTEMPT in $(seq 1 30); do
+  HTTP_CODE="$(
+    curl -s \
+      -o /tmp/runtime-delete-check.json \
+      -w '%{http_code}' \
+      -H "Authorization: Bearer $(gcloud auth print-access-token)" \
+      "https://${REGION}-aiplatform.googleapis.com/v1/projects/${PROJECT_ID}/locations/${REGION}/reasoningEngines/${RUNTIME_ID}"
+  )"
+
+  if [[ "${HTTP_CODE}" == "404" ]]; then
+    echo "PASS: Agent Runtime deletion confirmed."
+    break
+  fi
+
+  echo "Runtime still exists or deletion is propagating. Attempt ${ATTEMPT}/30..."
+  sleep 10
+done
+
+if [[ "${HTTP_CODE}" != "404" ]]; then
+  echo "ERROR: Agent Runtime deletion was not confirmed."
+  cat /tmp/runtime-delete-check.json
+  exit 1
+fi
+```
+
+Do not continue with Gateway deletion until this check passes.
+
+---
+
+## 41.5 Delete the UAP Policy Binding
+
+Delete the IAM v3 Policy Binding before deleting the Unified Access Policy:
+
+```bash
+gcloud iam policy-bindings delete "${POLICY_BINDING_NAME}" \
+  --project="${PROJECT_ID}" \
+  --location=global \
+  --quiet
+```
+
+---
+
+## 41.6 Delete the Unified Access Policy
+
+Delete the lab UAP:
+
+```bash
+gcloud iam access-policies delete "${ACCESS_POLICY_NAME}" \
+  --project="${PROJECT_ID}" \
+  --location=global \
+  --quiet
+```
+
+---
+
+## 41.7 Delete the Network Security Authorization Policy
+
+Delete the policy that attaches request authorization to the Agent Gateway:
+
+```bash
+gcloud network-security authz-policies delete "${AUTHZ_POLICY_NAME}" \
+  --location="${REGION}" \
+  --project="${PROJECT_ID}" \
+  --quiet
+```
+
+---
+
+## 41.8 Delete the IAP Authorization Extension
+
+After the Network Security Authorization Policy has been removed, delete the authorization extension:
+
+```bash
+gcloud service-extensions authz-extensions delete "${AUTHZ_EXTENSION_NAME}" \
+  --location="${REGION}" \
+  --project="${PROJECT_ID}" \
+  --quiet
+```
+
+---
+
+## 41.9 Delete the Agent Gateway
+
+Delete the Agent-to-Anywhere Gateway:
+
+```bash
+gcloud network-services agent-gateways delete "${AGENT_GATEWAY_NAME}" \
+  --location="${REGION}" \
+  --project="${PROJECT_ID}" \
+  --quiet
+```
+
+---
+
+## 41.10 Remove the Agent Registry services
+
+Delete the registered MCP service:
+
+```bash
+gcloud agent-registry services delete "${MCP_REGISTRY_SERVICE}" \
+  --location="${REGION}" \
+  --project="${PROJECT_ID}" \
+  --quiet
+```
+
+Delete the registered Vertex endpoint service:
+
+```bash
+gcloud agent-registry services delete "${VERTEX_ENDPOINT_SERVICE}" \
+  --location="${REGION}" \
+  --project="${PROJECT_ID}" \
+  --quiet
+```
+
+Deleting these Agent Registry service resources removes the lab destinations from the registry.
+
+---
+
+## 41.11 Delete the Cloud Run MCP service
+
+Delete the synthetic MCP server:
+
+```bash
+gcloud run services delete "${MCP_SERVICE}" \
+  --region="${REGION}" \
+  --project="${PROJECT_ID}" \
+  --quiet
+```
+
+Deleting the Cloud Run service removes its deployed revisions.
+
+Container images created during source deployment can remain in Artifact Registry and should be reviewed separately.
+
+---
+
+## 41.12 Optionally remove the Cloud Run Builder IAM binding
+
+Step 7 grants:
+
+```text
+roles/run.builder
+```
+
+to the project's default Cloud Build service account.
+
+Retrieve that identity again if necessary:
+
+```bash
+export BUILD_SERVICE_ACCOUNT="$(
+  gcloud builds get-default-service-account \
+    --project="${PROJECT_ID}"
+)"
+```
+
+Verify:
+
+```bash
+echo "${BUILD_SERVICE_ACCOUNT}"
+```
+
+Only remove the binding if it was added specifically for this lab and is not required by any other Cloud Run or Cloud Build workload in the project.
+
+If it is safe to remove:
+
+```bash
+gcloud projects remove-iam-policy-binding "${PROJECT_ID}" \
+  --member="serviceAccount:${BUILD_SERVICE_ACCOUNT}" \
+  --role="roles/run.builder"
+```
+
+Do not remove an IAM binding that existed before the lab or is used by another workload.
+
+---
+
+## 41.13 Optionally delete source-build artifacts
+
+A Cloud Run source deployment can use the Artifact Registry repository:
+
+```text
+cloud-run-source-deploy
+```
+
+Check whether it exists:
+
+```bash
+gcloud artifacts repositories describe cloud-run-source-deploy \
+  --location="${REGION}" \
+  --project="${PROJECT_ID}"
+```
+
+Do not automatically delete this repository.
+
+It can contain images belonging to other Cloud Run source deployments in the same project and region.
+
+If the repository was created exclusively for this lab and contains no artifacts required by other workloads, it can be deleted:
+
+```bash
+gcloud artifacts repositories delete cloud-run-source-deploy \
+  --location="${REGION}" \
+  --project="${PROJECT_ID}" \
+  --quiet
+```
+
+---
+
+## 41.14 Restore a temporary Organization Policy exception
+
+If a project-level exception for:
+
+```text
+constraints/iam.managed.disableAccessPolicyBinding
+```
+
+was created specifically to run this lab, restore the organization's normal policy after cleanup.
+
+Do not modify Organization Policy unless you are authorized to do so.
+
+If the project-level override was created only for this lab and the intended post-lab state is to inherit the parent policy, remove the project-level override:
+
+```bash
+gcloud org-policies delete \
+  constraints/iam.managed.disableAccessPolicyBinding \
+  --project="${PROJECT_ID}"
+```
+
+Then verify the effective policy:
+
+```bash
+gcloud org-policies describe \
+  constraints/iam.managed.disableAccessPolicyBinding \
+  --effective \
+  --project="${PROJECT_ID}"
+```
+
+The effective result after deletion depends on the policy inherited from the parent folder or organization.
+
+Do not use this command if the project-level policy existed before the lab.
+
+---
+
+## 41.15 Verify cleanup
+
+Check that the main lab resources are gone.
+
+Agent Runtime:
+
+```bash
+curl -fsS \
+  -H "Authorization: Bearer $(gcloud auth print-access-token)" \
+  "https://${REGION}-aiplatform.googleapis.com/v1/projects/${PROJECT_ID}/locations/${REGION}/reasoningEngines" \
+| jq '.reasoningEngines // []'
+```
+
+Agent Gateway:
+
+```bash
+gcloud network-services agent-gateways list \
+  --location="${REGION}" \
+  --project="${PROJECT_ID}"
+```
+
+Agent Registry:
+
+```bash
+gcloud agent-registry services list \
+  --location="${REGION}" \
+  --project="${PROJECT_ID}"
+```
+
+Cloud Run:
+
+```bash
+gcloud run services list \
+  --region="${REGION}" \
+  --project="${PROJECT_ID}"
+```
+
+Authorization policies:
+
+```bash
+gcloud network-security authz-policies list \
+  --location="${REGION}" \
+  --project="${PROJECT_ID}"
+```
+
+Authorization extensions:
+
+```bash
+gcloud service-extensions authz-extensions list \
+  --location="${REGION}" \
+  --project="${PROJECT_ID}"
+```
+
+The cleanup is complete when the lab-specific resources no longer appear.
+
+Do not interpret unrelated resources in a shared project as cleanup failures.
+
+---
+
+## Cleanup principle
+
+The cleanup process intentionally removes only resources created for this lab.
+
+Do not delete:
+
+```text
+shared Artifact Registry repositories
+pre-existing IAM bindings
+organization-level policies
+unrelated Agent Registry resources
+unrelated Cloud Run services
+```
+
+unless they were created exclusively for this lab and their deletion has been explicitly verified as safe.
