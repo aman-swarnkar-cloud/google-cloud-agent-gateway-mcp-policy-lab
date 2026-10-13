@@ -141,19 +141,55 @@ gcloud services enable \
   run.googleapis.com \
   cloudbuild.googleapis.com \
   artifactregistry.googleapis.com \
+  orgpolicy.googleapis.com \
   --project="${PROJECT_ID}"
 ```
 
 Agent Registry and IAP must both be enabled when Agent Gateway policy enforcement is used.
 
-Verify:
+The Organization Policy API is enabled so that the deployment can verify whether IAM v3 access-policy bindings are permitted in the target project.
+
+Verify the required APIs:
 
 ```bash
 gcloud services list \
   --enabled \
   --project="${PROJECT_ID}" \
-  --filter='name:(aiplatform.googleapis.com OR agentregistry.googleapis.com OR networkservices.googleapis.com OR networksecurity.googleapis.com OR iap.googleapis.com OR run.googleapis.com)'
+  --filter='name:(aiplatform.googleapis.com OR agentregistry.googleapis.com OR networkservices.googleapis.com OR networksecurity.googleapis.com OR iap.googleapis.com OR run.googleapis.com OR cloudbuild.googleapis.com OR orgpolicy.googleapis.com)'
 ```
+
+## UAP organization-policy preflight
+
+Before continuing, verify that the project is allowed to bind IAM v3 Unified Access Policies:
+
+```bash
+gcloud org-policies describe \
+  constraints/iam.managed.disableAccessPolicyBinding \
+  --effective \
+  --project="${PROJECT_ID}"
+```
+
+If the effective policy contains:
+
+```text
+enforce: true
+```
+
+stop the deployment before creating the UAP Policy Binding.
+
+An enforced:
+
+```text
+constraints/iam.managed.disableAccessPolicyBinding
+```
+
+prevents IAM v3 access policies from being bound to resources.
+
+An approved Organization Policy exception is required for the project before the UAP Policy Binding step can succeed.
+
+Do not attempt to work around this restriction by granting additional IAM roles.
+
+If the constraint is not enforced, continue with the deployment.
 
 ---
 
@@ -200,6 +236,66 @@ Do not continue if local validation fails.
 
 # 7. Deploy the MCP server to Cloud Run
 
+Cloud Run source deployment uses Cloud Build to build the container image.
+
+In a fresh Google Cloud project, the default Cloud Build identity may be the Compute Engine default service account. Do not assume that this identity already has the permissions required for a Cloud Run source deployment.
+
+Retrieve the build service account used by the project:
+
+```bash
+export BUILD_SERVICE_ACCOUNT="$(
+  gcloud builds get-default-service-account \
+    --project="${PROJECT_ID}"
+)"
+```
+
+Verify:
+
+```bash
+echo "${BUILD_SERVICE_ACCOUNT}"
+```
+
+The value must not be empty.
+
+Check:
+
+```bash
+if [[ -z "${BUILD_SERVICE_ACCOUNT}" ]]; then
+  echo "ERROR: unable to determine the default Cloud Build service account"
+  exit 1
+fi
+```
+
+Grant the Cloud Run Builder role to the build service account:
+
+```bash
+gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
+  --member="serviceAccount:${BUILD_SERVICE_ACCOUNT}" \
+  --role="roles/run.builder"
+```
+
+Allow a short period for IAM propagation before continuing.
+
+The source-build path requires the build identity to access build artifacts and objects used during the deployment.
+
+A fresh-project deployment may otherwise fail with errors such as:
+
+```text
+storage.objects.get permission denied
+```
+
+or with a Cloud Run source-build permission failure.
+
+If this occurs, verify:
+
+```text
+1. The correct Cloud Build service account was identified.
+2. roles/run.builder is granted to that service account.
+3. The IAM change has had time to propagate.
+```
+
+Do not grant broad Storage roles unless the remaining error proves that an additional Storage permission is required in the target environment.
+
 Deploy the synthetic MCP server:
 
 ```bash
@@ -239,14 +335,74 @@ Expected form:
 https://<cloud-run-service-host>/mcp
 ```
 
+Confirm that the value is not empty:
+
+```bash
+if [[ -z "${MCP_BASE_URL}" || -z "${MCP_URL}" ]]; then
+  echo "ERROR: MCP Cloud Run URL was not captured."
+  exit 1
+fi
+```
 ---
 
 # 8. Register the MCP server in Agent Registry
 
-The repository contains:
+The repository contains the Agent Registry MCP tool specification:
 
 ```text
 mcp-server/toolspec.json
+```
+
+Before registration, validate that the file is valid JSON:
+
+```bash
+jq . mcp-server/toolspec.json
+```
+
+Every MCP tool registered through a tool specification must include an `inputSchema`.
+
+Validate that every tool contains one:
+
+```bash
+jq -e 'all(.tools[]; has("inputSchema"))' \
+  mcp-server/toolspec.json
+```
+
+Expected result:
+
+```text
+true
+```
+
+If the command does not return `true`, stop before attempting Agent Registry registration.
+
+The validated tool specification contains:
+
+```text
+read_customer_profile
+  required input:
+    customer_id
+
+update_customer_profile
+  required input:
+    customer_id
+
+  optional input:
+    email
+```
+
+A tool definition containing only:
+
+```text
+name
+description
+```
+
+is insufficient for the current Agent Registry tool-spec validation and can fail with an error similar to:
+
+```text
+Invalid MCP tool spec content:
+tools.0: inputSchema is required
 ```
 
 Register the Cloud Run MCP endpoint together with its tool metadata:
@@ -264,6 +420,21 @@ export MCP_REGISTRY_RESOURCE="$(
 )"
 ```
 
+Verify that the registration returned a resource:
+
+```bash
+echo "${MCP_REGISTRY_RESOURCE}"
+```
+
+Fail early if it is empty:
+
+```bash
+if [[ -z "${MCP_REGISTRY_RESOURCE}" ]]; then
+  echo "ERROR: MCP Agent Registry resource was not created."
+  exit 1
+fi
+```
+
 Extract the generated MCP server ID:
 
 ```bash
@@ -273,29 +444,36 @@ export MCP_SERVER_ID="${MCP_REGISTRY_RESOURCE##*/}"
 Verify:
 
 ```bash
-echo "${MCP_REGISTRY_RESOURCE}"
+echo "MCP_REGISTRY_RESOURCE=${MCP_REGISTRY_RESOURCE}"
+echo "MCP_SERVER_ID=${MCP_SERVER_ID}"
+```
 
+List the registered MCP servers:
+
+```bash
 gcloud agent-registry mcp-servers list \
   --project="${PROJECT_ID}" \
   --location="${REGION}"
 ```
 
-Confirm that both tools are represented:
+Confirm that the registered tool metadata represents both:
 
 ```text
 read_customer_profile
 update_customer_profile
 ```
 
-Registration makes the destination discoverable.
+Registration makes the MCP destination and tool metadata discoverable through Agent Registry.
 
-Registration does not grant permission to invoke its tools.
+Registration does not grant the Agent Identity permission to invoke the MCP server or its tools.
+
+Those permissions are configured separately through IAP egress authorization and Unified Access Policy.
 
 ---
 
 # 9. Register the Vertex AI destination
 
-The validated Runtime used Gemini through the secure Vertex AI hostname:
+The validated Runtime uses Gemini through the Vertex AI mTLS hostname:
 
 ```text
 aiplatform.mtls.googleapis.com
@@ -315,6 +493,21 @@ export VERTEX_REGISTRY_RESOURCE="$(
 )"
 ```
 
+Verify that the registration returned a resource:
+
+```bash
+echo "${VERTEX_REGISTRY_RESOURCE}"
+```
+
+Fail early if it is empty:
+
+```bash
+if [[ -z "${VERTEX_REGISTRY_RESOURCE}" ]]; then
+  echo "ERROR: Vertex Agent Registry endpoint was not created."
+  exit 1
+fi
+```
+
 Extract the endpoint ID:
 
 ```bash
@@ -324,18 +517,67 @@ export VERTEX_ENDPOINT_ID="${VERTEX_REGISTRY_RESOURCE##*/}"
 Verify:
 
 ```bash
-echo "${VERTEX_REGISTRY_RESOURCE}"
+echo "VERTEX_REGISTRY_RESOURCE=${VERTEX_REGISTRY_RESOURCE}"
+echo "VERTEX_ENDPOINT_ID=${VERTEX_ENDPOINT_ID}"
+```
 
+List the registered endpoints:
+
+```bash
 gcloud agent-registry endpoints list \
   --project="${PROJECT_ID}" \
   --location="${REGION}"
 ```
 
-Important:
-
 Agent Gateway hostname matching is exact.
 
-If the Runtime or SDK in a different environment resolves another Vertex hostname, register that exact standard, regional, or mTLS hostname before enforcement.
+If the Runtime or SDK resolves a different Vertex AI hostname in another environment, register the exact hostname that appears in Agent Gateway logs before enabling enforcement.
+
+## Why this registration is required
+
+The Agent Gateway and Agent Runtime can be created even when the Vertex AI endpoint is not registered.
+
+However, once Agent-to-Anywhere Gateway enforcement is active, model traffic to an unregistered Vertex destination is denied.
+
+A controlled negative test was performed by deliberately skipping this registration.
+
+The Runtime and Gateway were created successfully, and MCP discovery still worked.
+
+The model request then failed with:
+
+```text
+403 Forbidden
+Egress request is not authorized.
+```
+
+Agent Gateway logs showed:
+
+```text
+hostname         = aiplatform.mtls.googleapis.com
+registryResource = null
+result           = DENIED
+```
+
+At the same time, the registered MCP server showed successful discovery traffic:
+
+```text
+initialize                 ALLOWED
+notifications/initialized  ALLOWED
+tools/list                  ALLOWED
+```
+
+This confirms that Vertex endpoint registration is not required for Gateway creation, but it is required for governed Gemini model traffic.
+
+The required sequence is therefore:
+
+```text
+Register Vertex endpoint
+→ grant Agent Identity IAP egress on that endpoint
+→ allow UAP registered-endpoint traffic
+→ invoke Gemini through Agent Gateway
+```
+
+Do not skip this step when the agent uses Gemini through the governed Agent Gateway path.
 
 ---
 
@@ -550,51 +792,165 @@ export RUNTIME_RESOURCE="$(
 )"
 ```
 
-Extract its ID:
+Extract the Runtime ID:
 
 ```bash
 export RUNTIME_ID="${RUNTIME_RESOURCE##*/}"
 ```
 
-Verify:
+Verify both values:
 
 ```bash
-echo "${RUNTIME_RESOURCE}"
-echo "${RUNTIME_ID}"
+echo "RUNTIME_RESOURCE=${RUNTIME_RESOURCE}"
+echo "RUNTIME_ID=${RUNTIME_ID}"
+```
+
+Fail early if either value is empty:
+
+```bash
+if [[ -z "${RUNTIME_RESOURCE}" || -z "${RUNTIME_ID}" ]]; then
+  echo "ERROR: Runtime resource or Runtime ID was not captured."
+  exit 1
+fi
+```
+
+Expected Runtime resource form:
+
+```text
+projects/<PROJECT_ID>/locations/<REGION>/reasoningEngines/<RUNTIME_ID>
+```
+
+On a fresh project, the first Runtime deployment can temporarily fail with an Agent Gateway permission error for the Vertex AI Service Agent.
+
+If the Vertex AI Service Agent already has:
+
+```text
+roles/aiplatform.serviceAgent
+```
+
+do not immediately grant additional Network Services roles.
+
+Allow time for service-agent and IAM propagation, then retry the same deployment command.
+
+The Vertex AI Service Agent and the Runtime Agent Identity are different identities:
+
+```text
+Vertex AI Service Agent
+→ Google-managed control-plane identity
+→ used while Vertex AI provisions and manages Runtime resources
+
+Agent Identity
+→ Runtime execution identity
+→ used for Agent Gateway, MCP, IAP, and UAP authorization
 ```
 
 ---
 
 # 15. Retrieve the actual Agent Identity
 
-Do not construct the Agent Identity from project or organization assumptions.
+Do not construct the Agent Identity from project number, organization ID, Runtime ID, or trust-domain assumptions.
 
-Retrieve the identity issued by Google:
+Retrieve the effective identity issued to the Runtime directly from the Runtime API:
 
 ```bash
-export AGENT_PRINCIPAL="$(
-  gcloud ai reasoning-engines describe "${RUNTIME_ID}" \
-    --project="${PROJECT_ID}" \
-    --location="${REGION}" \
-    --format='value(spec.effectiveIdentity)'
+export AGENT_EFFECTIVE_IDENTITY="$(
+  curl -fsS \
+    -H "Authorization: Bearer $(gcloud auth print-access-token)" \
+    "https://${REGION}-aiplatform.googleapis.com/v1/projects/${PROJECT_ID}/locations/${REGION}/reasoningEngines/${RUNTIME_ID}" \
+  | jq -r '.spec.effectiveIdentity // empty'
 )"
 ```
 
 Verify:
 
 ```bash
+echo "${AGENT_EFFECTIVE_IDENTITY}"
+```
+
+Fail early if no identity was returned:
+
+```bash
+if [[ -z "${AGENT_EFFECTIVE_IDENTITY}" ]]; then
+  echo "ERROR: Runtime effective Agent Identity was not returned."
+  exit 1
+fi
+```
+
+The Runtime API returns the effective identity in a form beginning with:
+
+```text
+agents.global.
+```
+
+For example:
+
+```text
+agents.global.<trust-domain>/resources/aiplatform/projects/<PROJECT_NUMBER>/locations/<REGION>/reasoningEngines/<RUNTIME_ID>
+```
+
+This value is the Runtime effective identity.
+
+It is not yet in IAM-member format.
+
+Create the IAM principal representation:
+
+```bash
+export AGENT_PRINCIPAL="principal://${AGENT_EFFECTIVE_IDENTITY}"
+```
+
+Verify both representations:
+
+```bash
+echo "Effective identity:"
+echo "${AGENT_EFFECTIVE_IDENTITY}"
+
+echo
+echo "IAM principal:"
 echo "${AGENT_PRINCIPAL}"
 ```
 
-It should begin with:
+Expected forms:
 
 ```text
-principal://
+Effective identity:
+agents.global.<trust-domain>/resources/aiplatform/...
+
+IAM principal:
+principal://agents.global.<trust-domain>/resources/aiplatform/...
+```
+
+Validate the relationship:
+
+```bash
+if [[ "${AGENT_PRINCIPAL}" != "principal://${AGENT_EFFECTIVE_IDENTITY}" ]]; then
+  echo "ERROR: IAM principal was not derived correctly."
+  exit 1
+fi
 ```
 
 The trust domain can differ between organization-backed and organization-less projects.
 
-Always use the returned identity.
+Always retrieve the Runtime effective identity dynamically and derive the IAM principal from that returned value.
+
+Use:
+
+```text
+${AGENT_EFFECTIVE_IDENTITY}
+```
+
+when comparing against:
+
+```text
+spec.effectiveIdentity
+```
+
+Use:
+
+```text
+${AGENT_PRINCIPAL}
+```
+
+when configuring IAM, IAP, or UAP principal bindings.
 
 ---
 
@@ -640,72 +996,127 @@ The agent needs discovery capability, not registry mutation capability.
 
 # 18. Grant IAP egress access to the registered MCP resource
 
-Create an IAP IAM policy file:
+Grant the Runtime Agent Identity permission to egress specifically to the registered MCP server.
+
+Use a resource-level IAP binding:
 
 ```bash
-cat > build/mcp-iap-policy.json <<EOF
-{
-  "policy": {
-    "bindings": [
-      {
-        "role": "roles/iap.egressor",
-        "members": [
-          "${AGENT_PRINCIPAL}"
-        ]
-      }
-    ]
-  }
-}
-EOF
+gcloud iap web add-iam-policy-binding \
+  --project="${PROJECT_ID}" \
+  --resource-type=agent-registry \
+  --mcp-server="${MCP_SERVER_ID}" \
+  --region="${REGION}" \
+  --member="${AGENT_PRINCIPAL}" \
+  --role="roles/iap.egressor"
 ```
 
-Apply it specifically to the registered MCP server:
+Verify the binding:
 
 ```bash
-gcloud iap web set-iam-policy build/mcp-iap-policy.json \
+gcloud iap web get-iam-policy \
   --project="${PROJECT_ID}" \
   --resource-type=agent-registry \
   --mcp-server="${MCP_SERVER_ID}" \
   --region="${REGION}"
 ```
 
-This grants destination-level egress capability.
+Confirm that the policy contains:
 
-Fine-grained tool authorization is still controlled separately by UAP.
+```text
+role: roles/iap.egressor
+```
+
+for:
+
+```text
+${AGENT_PRINCIPAL}
+```
+
+This binding is intentionally scoped to the specific MCP server resource.
+
+It does not grant egress permission across the entire project or every Agent Registry resource.
+
+Conceptually:
+
+```text
+Agent Principal
+  ↓
+roles/iap.egressor
+  ↓
+Registered MCP server
+```
+
+This is the destination-level authorization layer.
+
+Fine-grained authorization for individual MCP tool calls is enforced separately by the Unified Access Policy.
+
+Do not use a project-wide egress grant unless broader access to all registered destinations is explicitly intended.
 
 ---
 
 # 19. Grant IAP egress access to the Vertex endpoint
 
-Create:
+Grant the same Runtime Agent Identity egress permission specifically to the registered Vertex AI endpoint:
 
 ```bash
-cat > build/vertex-iap-policy.json <<EOF
-{
-  "policy": {
-    "bindings": [
-      {
-        "role": "roles/iap.egressor",
-        "members": [
-          "${AGENT_PRINCIPAL}"
-        ]
-      }
-    ]
-  }
-}
-EOF
+gcloud iap web add-iam-policy-binding \
+  --project="${PROJECT_ID}" \
+  --resource-type=agent-registry \
+  --endpoint="${VERTEX_ENDPOINT_ID}" \
+  --region="${REGION}" \
+  --member="${AGENT_PRINCIPAL}" \
+  --role="roles/iap.egressor"
 ```
 
-Apply it:
+Verify:
 
 ```bash
-gcloud iap web set-iam-policy build/vertex-iap-policy.json \
+gcloud iap web get-iam-policy \
   --project="${PROJECT_ID}" \
   --resource-type=agent-registry \
   --endpoint="${VERTEX_ENDPOINT_ID}" \
   --region="${REGION}"
 ```
 
+Confirm that the endpoint policy contains:
+
+```text
+role: roles/iap.egressor
+```
+
+for:
+
+```text
+${AGENT_PRINCIPAL}
+```
+
+The MCP server and Vertex endpoint are authorized separately so that the lab preserves resource-level least privilege:
+
+```text
+Agent Principal
+  ├── roles/iap.egressor → registered MCP server
+  └── roles/iap.egressor → registered Vertex endpoint
+```
+
+A broader Agent Registry-level IAP policy can authorize access to all registered destinations, but this lab deliberately uses per-resource bindings.
+
+This prevents newly registered resources from automatically becoming reachable by the agent.
+
+The previous `set-iam-policy` JSON-file approach is intentionally not used here.
+
+Using:
+
+```text
+gcloud iap web add-iam-policy-binding
+```
+
+is additive and avoids replacing the full resource policy or requiring an `etag`.
+
+It also avoids JSON-shape compatibility errors such as:
+
+```text
+Unknown name "policy" at 'policy'
+```
 ---
 
 # 20. Render the Unified Access Policy
@@ -789,7 +1200,9 @@ iap.googleapis.com/resources.egressViaIAP
 
 # 22. Bind the UAP to the project
 
-The repository includes the binding body for reference, but the gcloud command accepts the policy and target as command arguments.
+Creating the Unified Access Policy does not make it effective by itself.
+
+The UAP must be bound to the target project using an IAM v3 Policy Binding.
 
 Create the binding:
 
@@ -814,6 +1227,43 @@ Expected target:
 ```text
 //cloudresourcemanager.googleapis.com/projects/${PROJECT_ID}
 ```
+
+## Organization Policy failure
+
+If the create command fails with an error containing:
+
+```text
+constraints/iam.managed.disableAccessPolicyBinding
+```
+
+and:
+
+```text
+CUSTOM_ORG_POLICY_VIOLATION
+```
+
+do not modify the UAP and do not grant additional IAM roles.
+
+This means the effective Organization Policy prevents IAM v3 access policies from being bound to resources.
+
+Re-check the effective constraint:
+
+```bash
+gcloud org-policies describe \
+  constraints/iam.managed.disableAccessPolicyBinding \
+  --effective \
+  --project="${PROJECT_ID}"
+```
+
+If the result contains:
+
+```text
+enforce: true
+```
+
+the project requires an approved Organization Policy exception before this step can succeed.
+
+Do not continue to enforcement testing until the policy binding has been created successfully.
 
 ---
 
@@ -882,16 +1332,25 @@ iapPolicyVersion = V2
 
 # 25. Verify Runtime-to-Gateway association
 
+Before querying the Runtime API, confirm that the Runtime ID is available:
+
+```bash
+if [[ -z "${RUNTIME_ID}" ]]; then
+  echo "ERROR: RUNTIME_ID is empty."
+  exit 1
+fi
+```
+
 Check the Runtime API directly:
 
 ```bash
-curl -s \
+curl -fsS \
   -H "Authorization: Bearer $(gcloud auth print-access-token)" \
   "https://${REGION}-aiplatform.googleapis.com/v1/projects/${PROJECT_ID}/locations/${REGION}/reasoningEngines/${RUNTIME_ID}" \
 | jq '.spec.deploymentSpec.agentGatewayConfig'
 ```
 
-Expected:
+Expected result:
 
 ```text
 agentToAnywhereConfig.agentGateway
@@ -903,51 +1362,132 @@ must reference:
 projects/${PROJECT_ID}/locations/${REGION}/agentGateways/${AGENT_GATEWAY_NAME}
 ```
 
-If the result is `null`, stop and fix the Gateway binding before testing MCP policy.
+If the result is:
+
+```text
+null
+```
+
+stop before testing MCP authorization.
+
+First confirm that:
+
+```text
+RUNTIME_ID is correct
+AGENT_GATEWAY_NAME is correct
+the Runtime deployment completed successfully
+the Runtime was configured with the Agent-to-Anywhere Gateway
+```
+
+Do not assume that a `null` result proves a Gateway-binding defect until the Runtime resource being queried has been verified.
+
+A missing or empty Runtime ID can produce misleading REST errors or query the wrong resource path.
 
 ---
 
 # 26. Validate Agent Identity again
 
-Confirm the active Runtime identity:
+Retrieve the Runtime's current effective identity again before testing authorization:
 
 ```bash
-gcloud ai reasoning-engines describe "${RUNTIME_ID}" \
-  --project="${PROJECT_ID}" \
-  --location="${REGION}" \
-  --format='value(spec.effectiveIdentity)'
+CURRENT_EFFECTIVE_IDENTITY="$(
+  curl -fsS \
+    -H "Authorization: Bearer $(gcloud auth print-access-token)" \
+    "https://${REGION}-aiplatform.googleapis.com/v1/projects/${PROJECT_ID}/locations/${REGION}/reasoningEngines/${RUNTIME_ID}" \
+  | jq -r '.spec.effectiveIdentity // empty'
+)"
 ```
 
-It must exactly match:
+Display the values being compared:
+
+```bash
+echo "Runtime effective identity:"
+echo "${CURRENT_EFFECTIVE_IDENTITY}"
+
+echo
+echo "Expected effective identity:"
+echo "${AGENT_EFFECTIVE_IDENTITY}"
+
+echo
+echo "IAM principal used for IAM/IAP/UAP:"
+echo "${AGENT_PRINCIPAL}"
+```
+
+Validate both identity representations:
+
+```bash
+if [[ -z "${CURRENT_EFFECTIVE_IDENTITY}" ]]; then
+  echo "FAIL: Runtime effective identity was not returned."
+  exit 1
+fi
+
+if [[ "${CURRENT_EFFECTIVE_IDENTITY}" != "${AGENT_EFFECTIVE_IDENTITY}" ]]; then
+  echo "FAIL: Runtime effective identity has changed."
+  exit 1
+fi
+
+if [[ "${AGENT_PRINCIPAL}" != "principal://${CURRENT_EFFECTIVE_IDENTITY}" ]]; then
+  echo "FAIL: IAM principal does not match the Runtime effective identity."
+  exit 1
+fi
+
+echo "PASS: Runtime Agent Identity matches the identity used for IAM, IAP, and UAP."
+```
+
+The Runtime API returns:
 
 ```text
-${AGENT_PRINCIPAL}
+agents.global....
 ```
 
-used when the UAP was rendered.
+while IAM, IAP, and UAP bindings use:
 
-If the Runtime was deleted and recreated, its identity changes.
+```text
+principal://agents.global....
+```
 
-A UAP referencing the previous Runtime principal will no longer authorize the new Runtime.
+These are two representations of the same Agent Identity and should not be compared as identical strings.
+
+If the Runtime was deleted and recreated, the new Runtime receives a new effective Agent Identity.
+
+In that case, update all authorization references that used the previous identity:
+
+```text
+Cloud Run Invoker binding
+Agent Registry Viewer binding
+MCP resource IAP egress binding
+Vertex endpoint IAP egress binding
+UAP principal
+```
+
+Do not reuse authorization bindings belonging to a deleted Runtime identity.
 
 ---
 
-# 27. Validate the read path
+# 27. Validate the allowed read path
 
-Use the deployed Agent Runtime with a request equivalent to:
+Open the deployed Agent Runtime in the Google Cloud console and start an interactive Playground session.
+
+Send:
 
 ```text
 Read the customer profile for customer_id CUST-1001.
 Use the MCP tool.
 ```
 
-Expected model selection:
+The agent should select:
 
 ```text
 read_customer_profile
 ```
 
-Expected tool result:
+with:
+
+```text
+customer_id = CUST-1001
+```
+
+Expected MCP result:
 
 ```json
 {
@@ -961,7 +1501,7 @@ Expected tool result:
 }
 ```
 
-Expected authorization result:
+Expected authorization outcome:
 
 ```text
 ALLOW
@@ -970,14 +1510,54 @@ ALLOW
 Expected downstream behavior:
 
 ```text
-Cloud Run receives and executes read_customer_profile
+read_customer_profile
+→ selected by the model
+→ authorized by policy
+→ forwarded through Agent Gateway
+→ executed by the MCP server
+→ result returned to the agent
 ```
+
+If the Playground instead returns:
+
+```text
+403 Forbidden
+Egress request is not authorized.
+```
+
+do not immediately modify the MCP configuration.
+
+Inspect the Agent Gateway logs first.
+
+If the denied hostname is:
+
+```text
+aiplatform.mtls.googleapis.com
+```
+
+and:
+
+```text
+registryResource = null
+```
+
+verify:
+
+```text
+Vertex AI endpoint is registered in Agent Registry
+Agent Principal has roles/iap.egressor on the registered Vertex endpoint
+UAP allows registered ENDPOINT traffic
+```
+
+A failure reaching Vertex AI occurs before MCP tool execution and should not be diagnosed as an MCP tool-policy failure.
 
 ---
 
 # 28. Validate the denied update path
 
-Send a request equivalent to:
+Use the same interactive Playground session.
+
+Send:
 
 ```text
 Call update_customer_profile for customer_id CUST-1001
@@ -985,13 +1565,19 @@ and set email to blocked@example.com.
 Use the MCP tool.
 ```
 
-Expected model selection:
+The model should select:
 
 ```text
 update_customer_profile
 ```
 
-Expected runtime result:
+Expected authorization outcome:
+
+```text
+DENY
+```
+
+Expected Runtime behavior:
 
 ```text
 tool execution fails
@@ -1000,10 +1586,22 @@ tool execution fails
 Expected downstream behavior:
 
 ```text
-Cloud Run does NOT receive the update tool execution
+Cloud Run does NOT execute update_customer_profile
 ```
 
-The model choosing a tool does not mean that the tool has authorization to execute.
+The important security result is:
+
+```text
+model selects update_customer_profile
+→ authorization layer denies execution
+→ update request does not reach the MCP server as a tool execution
+```
+
+The model selecting a tool does not grant permission to execute that tool.
+
+Do not treat the Playground error alone as sufficient proof of successful authorization enforcement.
+
+Continue with the Agent Gateway and Cloud Run log validation steps below to confirm that the denied mutation did not execute downstream.
 
 ---
 
@@ -1227,29 +1825,71 @@ inspect evidence
 
 # 38. Common failure: recreated Runtime no longer works
 
-Every newly created Agent Runtime receives a new immutable Runtime ID and therefore a new Agent Identity.
+Every newly created Agent Runtime receives a new immutable Runtime ID and a new effective Agent Identity.
 
-After recreating the Runtime:
+Do not reuse the identity or authorization bindings from a deleted Runtime.
+
+After recreating the Runtime, capture the new resource and Runtime ID:
 
 ```bash
-export AGENT_PRINCIPAL="$(
-  gcloud ai reasoning-engines describe "${RUNTIME_ID}" \
-    --project="${PROJECT_ID}" \
-    --location="${REGION}" \
-    --format='value(spec.effectiveIdentity)'
+export RUNTIME_RESOURCE="$(
+  awk '/^Resource:/ {print $2}' build/runtime-deployment.log \
+  | tail -1
+)"
+
+export RUNTIME_ID="${RUNTIME_RESOURCE##*/}"
+```
+
+Verify:
+
+```bash
+echo "RUNTIME_RESOURCE=${RUNTIME_RESOURCE}"
+echo "RUNTIME_ID=${RUNTIME_ID}"
+```
+
+Retrieve the new effective Agent Identity:
+
+```bash
+export AGENT_EFFECTIVE_IDENTITY="$(
+  curl -fsS \
+    -H "Authorization: Bearer $(gcloud auth print-access-token)" \
+    "https://${REGION}-aiplatform.googleapis.com/v1/projects/${PROJECT_ID}/locations/${REGION}/reasoningEngines/${RUNTIME_ID}" \
+  | jq -r '.spec.effectiveIdentity // empty'
 )"
 ```
 
-Then update:
+Create the IAM principal representation:
+
+```bash
+export AGENT_PRINCIPAL="principal://${AGENT_EFFECTIVE_IDENTITY}"
+```
+
+Verify:
+
+```bash
+echo "AGENT_EFFECTIVE_IDENTITY=${AGENT_EFFECTIVE_IDENTITY}"
+echo "AGENT_PRINCIPAL=${AGENT_PRINCIPAL}"
+```
+
+Then update every authorization reference that belonged to the previous Runtime identity:
 
 ```text
 Cloud Run Invoker binding
-Agent Registry viewer binding
-IAP resource bindings
+Agent Registry Viewer binding
+MCP resource IAP egress binding
+Vertex endpoint IAP egress binding
 UAP principal
 ```
 
-Do not reuse permissions belonging to the deleted Runtime identity.
+Re-render the Unified Access Policy after updating:
+
+```text
+${AGENT_PRINCIPAL}
+```
+
+and update the deployed UAP before testing the recreated Runtime.
+
+Do not reuse permissions or policy principals belonging to the deleted Runtime identity.
 
 ---
 
@@ -1258,27 +1898,91 @@ Do not reuse permissions belonging to the deleted Runtime identity.
 Deployment is complete only when all of the following are true:
 
 ```text
-[ ] MCP server deployed
+[ ] Required Google Cloud APIs are enabled
+[ ] Organization Policy allows IAM v3 access-policy binding
+[ ] Cloud Build service account is identified
+[ ] Cloud Build service account has roles/run.builder
+
+[ ] MCP server is deployed to Cloud Run
 [ ] MCP server requires authentication
-[ ] MCP server registered in Agent Registry
-[ ] read_customer_profile registered
-[ ] update_customer_profile registered
-[ ] Vertex endpoint registered
-[ ] Agent Gateway created in AGENT_TO_ANYWHERE mode
-[ ] IAP V2 Authorization Extension attached
-[ ] Network Security REQUEST_AUTHZ policy attached
-[ ] Runtime deployed with AGENT_IDENTITY
-[ ] Runtime associated with Agent Gateway
-[ ] Runtime effective identity captured dynamically
-[ ] Cloud Run Invoker granted to Runtime identity
-[ ] Agent Registry discovery granted
-[ ] IAP egress granted to required registered destinations
-[ ] UAP created
-[ ] UAP bound to project
-[ ] IAP enforcement enabled
-[ ] read_customer_profile executes
-[ ] update_customer_profile is blocked
-[ ] denied update does not reach Cloud Run
+[ ] MCP_URL is captured successfully
+
+[ ] MCP toolspec is valid JSON
+[ ] Every MCP tool contains inputSchema
+[ ] MCP server is registered in Agent Registry
+[ ] read_customer_profile is registered
+[ ] update_customer_profile is registered
+
+[ ] Vertex AI mTLS endpoint is registered in Agent Registry
+[ ] Vertex endpoint ID is captured successfully
+
+[ ] Agent Gateway is created in AGENT_TO_ANYWHERE mode
+[ ] Regional Agent Registry is attached to the Gateway
+
+[ ] IAP V2 Authorization Extension is created
+[ ] Network Security REQUEST_AUTHZ policy is attached
+[ ] Runtime is deployed with AGENT_IDENTITY
+[ ] Runtime ID is captured successfully
+[ ] Runtime is associated with the intended Agent Gateway
+
+[ ] Runtime effective Agent Identity is retrieved dynamically
+[ ] AGENT_EFFECTIVE_IDENTITY begins with agents.global.
+[ ] AGENT_PRINCIPAL is derived as principal://${AGENT_EFFECTIVE_IDENTITY}
+
+[ ] Cloud Run Invoker is granted to the Runtime Agent Principal
+[ ] Agent Registry Viewer is granted to the Runtime Agent Principal
+
+[ ] roles/iap.egressor is granted on the registered MCP server
+[ ] roles/iap.egressor is granted on the registered Vertex endpoint
+
+[ ] Unified Access Policy is rendered with the current Agent Principal
+[ ] Unified Access Policy is created successfully
+[ ] UAP contains the four expected authorization rules
+[ ] UAP is bound to the target project
+[ ] Policy propagation time has been allowed
+
+[ ] IAP enforcement is enabled
+[ ] Playground session can reach Gemini through Agent Gateway
+[ ] MCP initialize is allowed
+[ ] MCP notifications/initialized is allowed
+[ ] MCP tools/list is allowed
+
+[ ] read_customer_profile is selected by the model
+[ ] read_customer_profile is authorized
+[ ] read_customer_profile executes successfully
+
+[ ] update_customer_profile is selected by the model
+[ ] update_customer_profile is denied
+[ ] denied update does not execute on Cloud Run
+
+[ ] Agent Gateway logs support the authorization result
+[ ] Cloud Run logs confirm downstream execution behavior
+```
+
+The final acceptance condition is not simply that the agent responds successfully.
+
+The deployment must demonstrate both:
+
+```text
+positive authorization
++
+negative authorization
+```
+
+Specifically:
+
+```text
+read_customer_profile
+→ ALLOWED
+→ EXECUTED
+```
+
+and:
+
+```text
+update_customer_profile
+→ DENIED
+→ NOT EXECUTED
 ```
 
 ---
