@@ -272,21 +272,103 @@ Creating a UAP does not by itself make the policy effective until the policy is 
 
 ---
 
-# 5. Agent Identity
+# 6. Agent Registry
 
-The Agent Runtime uses:
+The MCP server is registered with Agent Registry.
 
-```text
-identity_type = AGENT_IDENTITY
-```
-
-The UAP evaluates the Runtime's effective Agent Identity.
+Its registered tool metadata includes:
 
 ```text
-${AGENT_PRINCIPAL}
+read_customer_profile
+update_customer_profile
 ```
 
-This allows authorization to be evaluated for a specific deployed agent instead of relying on a broadly shared runtime identity.
+Repository representation:
+
+```text
+mcp-server/toolspec.json
+```
+
+The tool specification must include a valid `inputSchema` for every registered tool.
+
+For this lab:
+
+```text
+read_customer_profile
+→ requires customer_id
+
+update_customer_profile
+→ requires customer_id
+→ accepts email
+```
+
+A fresh-project deployment exposed that Agent Registry rejects an MCP tool specification when `inputSchema` is missing.
+
+The observed validation condition was equivalent to:
+
+```text
+tools.0: inputSchema is required
+tools.1: inputSchema is required
+```
+
+The repository now validates this requirement before registration:
+
+```bash
+jq -e 'all(.tools[]; has("inputSchema"))' mcp-server/toolspec.json
+```
+
+Expected:
+
+```text
+true
+```
+
+This is important because the MCP server implementation and the Agent Registry tool specification are separate artifacts.
+
+A tool existing in the running MCP server does not automatically make an incomplete static registry specification valid.
+
+The validated registration relationship is:
+
+```text
+MCP server implementation
++
+toolspec.json
++
+inputSchema
+→ Agent Registry registration
+```
+
+Registration and authorization remain separate concepts.
+
+Registration means the destination and tool metadata are known to Agent Registry.
+
+It does not grant permission to execute those tools.
+
+Therefore:
+
+```text
+registered tool
+≠
+authorized tool
+```
+
+and the validated lab behavior remains:
+
+```text
+read_customer_profile
+→ registered
+→ authorized
+→ executed
+```
+
+while:
+
+```text
+update_customer_profile
+→ registered
+→ denied by authorization policy
+→ not executed
+```
 
 ---
 
@@ -307,9 +389,86 @@ Repository representation:
 mcp-server/toolspec.json
 ```
 
-Registration and authorization are separate concepts.
+The tool specification must include a valid `inputSchema` for every registered tool.
 
-A registered tool can still be denied by UAP.
+For this lab:
+
+```text
+read_customer_profile
+→ requires customer_id
+
+update_customer_profile
+→ requires customer_id
+→ accepts email
+```
+
+A fresh-project deployment exposed that Agent Registry rejects an MCP tool specification when `inputSchema` is missing.
+
+The observed validation condition was equivalent to:
+
+```text
+tools.0: inputSchema is required
+tools.1: inputSchema is required
+```
+
+The repository now validates this requirement before registration:
+
+```bash
+jq -e 'all(.tools[]; has("inputSchema"))' mcp-server/toolspec.json
+```
+
+Expected:
+
+```text
+true
+```
+
+This is important because the MCP server implementation and the Agent Registry tool specification are separate artifacts.
+
+A tool existing in the running MCP server does not automatically make an incomplete static registry specification valid.
+
+The validated registration relationship is:
+
+```text
+MCP server implementation
++
+toolspec.json
++
+inputSchema
+→ Agent Registry registration
+```
+
+Registration and authorization remain separate concepts.
+
+Registration means the destination and tool metadata are known to Agent Registry.
+
+It does not grant permission to execute those tools.
+
+Therefore:
+
+```text
+registered tool
+≠
+authorized tool
+```
+
+and the validated lab behavior remains:
+
+```text
+read_customer_profile
+→ registered
+→ authorized
+→ executed
+```
+
+while:
+
+```text
+update_customer_profile
+→ registered
+→ denied by authorization policy
+→ not executed
+```
 
 ---
 
@@ -682,6 +841,318 @@ Therefore the 1-second configuration is the final validated baseline.
 
 # 18. Common implementation failures discovered
 
+The lab was reproduced in a fresh Google Cloud project to identify assumptions that were not visible in the original validation environment.
+
+The following failures were encountered and resolved.
+
+## Cloud Run source deployment fails during build
+
+Possible symptom:
+
+```text
+storage.objects.get permission denied
+```
+
+during:
+
+```text
+gcloud run deploy --source
+```
+
+This can occur when the default Cloud Build service account does not yet have the permissions required for Cloud Run source builds.
+
+Retrieve the build identity:
+
+```bash
+gcloud builds get-default-service-account \
+  --project="${PROJECT_ID}"
+```
+
+The validated minimum project role used by this lab is:
+
+```text
+roles/run.builder
+```
+
+Do not respond to the storage error by granting broad Storage roles unless independently required.
+
+The storage error can be a downstream symptom of the source-build identity not having the expected Cloud Run build permissions.
+
+---
+
+## Agent Registry rejects MCP tool specification
+
+Possible symptom:
+
+```text
+Invalid MCP tool spec content
+tools.0: inputSchema is required
+tools.1: inputSchema is required
+```
+
+Every tool in:
+
+```text
+mcp-server/toolspec.json
+```
+
+must contain:
+
+```text
+inputSchema
+```
+
+Validate before registration:
+
+```bash
+jq -e 'all(.tools[]; has("inputSchema"))' mcp-server/toolspec.json
+```
+
+Expected:
+
+```text
+true
+```
+
+---
+
+## Runtime deployment initially reports missing Agent Gateway permission
+
+A fresh project can temporarily report that the Vertex AI Service Agent cannot access the Agent Gateway, including permission such as:
+
+```text
+networkservices.agentGateways.get
+```
+
+Before granting additional roles, inspect the Vertex AI Service Agent.
+
+If it already has:
+
+```text
+roles/aiplatform.serviceAgent
+```
+
+wait for IAM or service-agent provisioning to propagate and retry the Runtime deployment.
+
+In the reproduced environment, the same deployment succeeded on retry without granting an additional role.
+
+Do not confuse the Google-managed Vertex AI Service Agent with the Runtime's Agent Identity.
+
+They are different identities with different responsibilities.
+
+---
+
+## Reasoning Engines gcloud command is unavailable
+
+Some Cloud SDK environments may not expose:
+
+```text
+gcloud ai reasoning-engines describe
+```
+
+even when the Runtime API is available.
+
+The more portable validation path used by this lab is the Vertex AI REST API:
+
+```bash
+curl -fsS \
+  -H "Authorization: Bearer $(gcloud auth print-access-token)" \
+  "https://${REGION}-aiplatform.googleapis.com/v1/projects/${PROJECT_ID}/locations/${REGION}/reasoningEngines/${RUNTIME_ID}"
+```
+
+This is also the source used to retrieve:
+
+```text
+spec.effectiveIdentity
+spec.deploymentSpec.agentGatewayConfig
+```
+
+---
+
+## Agent Identity representation is interpreted incorrectly
+
+The Runtime API returns:
+
+```text
+spec.effectiveIdentity
+```
+
+in raw form:
+
+```text
+agents.global.<trust-domain>/resources/aiplatform/...
+```
+
+IAM, IAP, and UAP require:
+
+```text
+principal://agents.global.<trust-domain>/resources/aiplatform/...
+```
+
+Therefore:
+
+```text
+AGENT_EFFECTIVE_IDENTITY
+=
+spec.effectiveIdentity
+```
+
+and:
+
+```text
+AGENT_PRINCIPAL
+=
+principal://${AGENT_EFFECTIVE_IDENTITY}
+```
+
+Do not compare the raw Runtime value directly with the IAM principal string.
+
+---
+
+## IAP policy JSON replacement fails
+
+A policy-replacement approach using:
+
+```text
+gcloud iap web set-iam-policy
+```
+
+with a JSON wrapper can fail with an error equivalent to:
+
+```text
+Invalid JSON payload received.
+Unknown name "policy" at "policy"
+```
+
+It also introduces policy-replacement and etag concerns.
+
+The validated approach for this lab is additive resource-level IAM:
+
+```text
+gcloud iap web add-iam-policy-binding
+```
+
+applied separately to:
+
+```text
+registered MCP server
+registered Vertex endpoint
+```
+
+with:
+
+```text
+roles/iap.egressor
+```
+
+This also preserves the lab's least-privilege model.
+
+A registry-wide grant is not required.
+
+---
+
+## UAP Policy Binding creation is blocked by Organization Policy
+
+Possible symptom:
+
+```text
+FAILED_PRECONDITION
+CUSTOM_ORG_POLICY_VIOLATION
+constraints/iam.managed.disableAccessPolicyBinding
+```
+
+Inspect the effective policy:
+
+```bash
+gcloud org-policies describe \
+  constraints/iam.managed.disableAccessPolicyBinding \
+  --effective \
+  --project="${PROJECT_ID}"
+```
+
+If the constraint is enforced, IAM permission changes do not bypass it.
+
+The project requires an approved Organization Policy exception before the UAP Policy Binding can be created.
+
+This is an environment prerequisite, not a malformed UAP or Policy Binding command.
+
+---
+
+## Runtime API request unexpectedly returns 404
+
+Before diagnosing Runtime-to-Gateway association, confirm:
+
+```bash
+echo "${RUNTIME_RESOURCE}"
+echo "${RUNTIME_ID}"
+```
+
+An empty `RUNTIME_ID` can produce a request against:
+
+```text
+.../reasoningEngines/
+```
+
+instead of a specific Runtime resource.
+
+That failure does not prove that the Runtime-to-Gateway association is missing.
+
+Always fail fast when the Runtime resource or Runtime ID is empty.
+
+---
+
+## Gemini traffic is denied before MCP execution
+
+A deliberate negative test was performed by leaving the Vertex AI destination unregistered while keeping the MCP destination registered.
+
+The Agent Gateway and Runtime could still be created.
+
+MCP discovery traffic could also be observed as allowed.
+
+However, interactive Runtime execution failed with:
+
+```text
+403 Forbidden
+Egress request is not authorized.
+```
+
+Gateway evidence showed the destination hostname:
+
+```text
+aiplatform.mtls.googleapis.com
+```
+
+with:
+
+```text
+registryResource = null
+```
+
+and an authorization result of:
+
+```text
+DENIED
+```
+
+This demonstrates that Vertex endpoint registration is not required merely to create the Gateway or Runtime.
+
+It is required for governed Gemini model traffic when Agent-to-Anywhere enforcement is active.
+
+The validated sequence is:
+
+```text
+register Vertex endpoint
+→ grant resource-level IAP egress
+→ allow registered ENDPOINT traffic in UAP
+→ Gemini inference succeeds through Agent Gateway
+```
+
+Do not register unrelated denied hostnames merely because they appear in Gateway logs.
+
+Identify whether the hostname is actually part of the intended governed application path before adding it to Agent Registry.
+
+---
+
 ## MCP tools/list denied
 
 Symptom:
@@ -691,18 +1162,20 @@ initialize works
 tools/list fails
 ```
 
-Working condition:
+The validated discovery rule is:
 
 ```text
 destination.is_registered == true &&
 destination.agent_registry.mcp_server.method != 'tools/call'
 ```
 
+MCP discovery must succeed before normal tool execution can occur.
+
 ---
 
 ## Tool-specific rule does not match
 
-Working tool-rule pattern:
+The validated tool-rule pattern is:
 
 ```text
 destination.is_registered == true &&
@@ -710,18 +1183,20 @@ destination.agent_registry.mcp_server.method == 'tools/call' &&
 destination.agent_registry.mcp_server.tool.name == '<TOOL_NAME>'
 ```
 
+Tool discovery and tool execution authorization are independent.
+
 ---
 
 ## Vertex endpoint-specific rule does not match
 
-The validated working rule was:
+The validated rule is:
 
 ```text
 destination.is_registered == true &&
 destination.agent_registry.resource_type == 'ENDPOINT'
 ```
 
-This allows registered Vertex endpoint traffic.
+This allows traffic to registered endpoints.
 
 Further endpoint-level tightening should be tested independently before replacing this rule.
 
@@ -729,19 +1204,19 @@ Further endpoint-level tightening should be tested independently before replacin
 
 ## Incorrect UAP permission string
 
-The policy file must use:
+The policy definition must use:
 
 ```text
 iap.googleapis.com/resources.egressViaIAP
 ```
 
-Do not replace it with the shortened runtime audit representation:
+Do not replace it with the shortened audit-log representation:
 
 ```text
 iap.resources.egressViaIAP
 ```
 
-The shortened form can appear in audit output but is not the correct permission value for the UAP definition.
+The shorter form can appear in audit output but is not the permission value used by the UAP definition.
 
 ---
 
@@ -755,41 +1230,119 @@ new CEL rule appears ineffective
 
 Resolution:
 
-Wait several minutes before concluding that a rule is incorrect.
+```text
+update
+→ wait for propagation
+→ test once
+→ inspect evidence
+```
+
+Do not repeatedly change policy expressions while an earlier version may still be propagating.
 
 ---
 
 ## Bound-token protection enabled
 
-Symptom:
+Possible symptom:
 
 ```text
-Gateway ALLOWED
-Vertex AI 401 UNAUTHENTICATED
+Agent Gateway authorization = ALLOWED
+Vertex AI response = 401 UNAUTHENTICATED
 ```
 
-Known-good compatibility setting:
+The validated compatibility setting is:
 
 ```text
 GOOGLE_API_PREVENT_AGENT_TOKEN_SHARING_FOR_GCP_SERVICES=False
 ```
 
+The reproduced experiment was:
+
+```text
+False
+→ read succeeds
+
+True
+→ Gateway allows Vertex request
+→ Vertex returns 401 UNAUTHENTICATED
+
+False
+→ read succeeds again
+```
+
+Do not change this setting as part of unrelated authorization troubleshooting.
+
 ---
 
 # 19. Known-good deployment variables
 
-The repository does not commit environment-specific resource identifiers.
+The repository intentionally does not commit environment-specific resource identifiers.
 
-Expected variables include:
+The validated deployment uses the following variables.
+
+## Project and region
 
 ```text
-GOOGLE_CLOUD_PROJECT
-GOOGLE_CLOUD_REGION
 PROJECT_ID
 REGION
-RUNTIME_ID
-MCP_URL
+GOOGLE_CLOUD_PROJECT
+GOOGLE_CLOUD_REGION
+```
+
+The Google Cloud SDK project and the deployment variables must refer to the same target project.
+
+---
+
+## MCP server
+
+```text
 MCP_SERVICE
+MCP_BASE_URL
+MCP_URL
+MCP_REGISTRY_SERVICE
+MCP_REGISTRY_RESOURCE
+MCP_SERVER_ID
+```
+
+The validated relationship is:
+
+```text
+MCP_BASE_URL
+→ Cloud Run service URL
+
+MCP_URL
+→ ${MCP_BASE_URL}/mcp
+
+MCP_REGISTRY_RESOURCE
+→ Agent Registry resource returned during registration
+
+MCP_SERVER_ID
+→ final resource segment of MCP_REGISTRY_RESOURCE
+```
+
+---
+
+## Vertex AI registered endpoint
+
+```text
+VERTEX_ENDPOINT_SERVICE
+VERTEX_REGISTRY_RESOURCE
+VERTEX_ENDPOINT_ID
+```
+
+The registered destination must correspond to the Vertex hostname actually used by the Runtime.
+
+For the validated environment:
+
+```text
+aiplatform.mtls.googleapis.com
+```
+
+---
+
+## Agent Gateway and authorization resources
+
+```text
 AGENT_GATEWAY_NAME
 AUTHZ_EXTENSION_NAME
 AUTHZ_POLICY_NAME
@@ -797,7 +1350,153 @@ ACCESS_POLICY_NAME
 POLICY_BINDING_NAME
 ```
 
-Policy templates must be rendered before deployment.
+These values identify the governed Agent-to-Anywhere path and its authorization resources.
+
+---
+
+## Agent Runtime
+
+```text
+RUNTIME_RESOURCE
+RUNTIME_ID
+```
+
+The expected relationship is:
+
+```text
+RUNTIME_RESOURCE
+→ full Runtime resource name
+
+RUNTIME_ID
+→ final resource segment of RUNTIME_RESOURCE
+```
+
+Both must be non-empty before Runtime API validation is attempted.
+
+---
+
+## Agent Identity
+
+The Runtime API returns:
+
+```text
+AGENT_EFFECTIVE_IDENTITY
+```
+
+from:
+
+```text
+spec.effectiveIdentity
+```
+
+Its form is:
+
+```text
+agents.global.<trust-domain>/resources/aiplatform/...
+```
+
+The IAM principal representation is derived separately:
+
+```text
+AGENT_PRINCIPAL
+=
+principal://${AGENT_EFFECTIVE_IDENTITY}
+```
+
+Therefore:
+
+```text
+AGENT_EFFECTIVE_IDENTITY
+≠
+AGENT_PRINCIPAL
+```
+
+as literal strings.
+
+Use:
+
+```text
+AGENT_EFFECTIVE_IDENTITY
+```
+
+when comparing against the Runtime API.
+
+Use:
+
+```text
+AGENT_PRINCIPAL
+```
+
+for:
+
+```text
+Cloud Run IAM
+Agent Registry IAM
+IAP IAM
+Unified Access Policy
+```
+
+---
+
+## Cloud Run source-build identity
+
+Fresh-project deployment can also require:
+
+```text
+BUILD_SERVICE_ACCOUNT
+```
+
+retrieved using:
+
+```bash
+gcloud builds get-default-service-account \
+  --project="${PROJECT_ID}"
+```
+
+The validated build role used by the lab is:
+
+```text
+roles/run.builder
+```
+
+---
+
+## Template rendering
+
+Policy templates contain environment placeholders such as:
+
+```text
+${PROJECT_ID}
+${REGION}
+${AGENT_PRINCIPAL}
+```
+
+They must be rendered before deployment.
+
+No unresolved placeholder should remain in a deployed policy artifact.
+
+The deployment guide performs explicit validation before applying the Unified Access Policy.
+
+---
+
+## Portability principle
+
+Do not hardcode:
+
+```text
+project IDs
+project numbers
+Runtime IDs
+Agent Registry resource IDs
+Cloud Run hostnames
+Agent Identity trust domains
+```
+
+into repository artifacts.
+
+They must be discovered or generated from the deployment environment.
+
+This is required for the lab to remain reproducible across independent Google Cloud projects.
 
 ---
 
@@ -847,34 +1546,173 @@ docs/
 
 # 21. Recommended first-attempt validation order
 
-Use the following sequence when reproducing this architecture in another project:
+Use the following sequence when reproducing this architecture in another Google Cloud project.
 
 ```text
-1. Deploy MCP server
-2. Register MCP server and tool metadata
-3. Deploy Agent Runtime with Agent Identity
-4. Create Agent Gateway
-5. Associate Agent Runtime with Agent Gateway
-6. Ensure required Agent Registry and IAP IAM roles
-7. Create IAP Authorization Extension
-8. Create Network Security Authorization Policy
-9. Create UAP
-10. Create UAP Policy Binding
-11. Begin with policy evaluation / validation
-12. Allow MCP discovery
-13. Allow registered Vertex endpoint traffic
-14. Add tool-specific ALLOW
-15. Add tool-specific DENY
-16. Allow sufficient propagation time
-17. Validate read
-18. Validate update denial
-19. Confirm denied operation never reached Cloud Run
-20. Capture logs and freeze the known-good configuration
+1. Set and verify PROJECT_ID and REGION
+
+2. Enable required APIs, including:
+   - Vertex AI
+   - Agent Registry
+   - Agent Gateway / Network Services
+   - Network Security
+   - IAP
+   - IAM
+   - Cloud Run
+   - Cloud Build
+   - Artifact Registry
+   - Organization Policy
+
+3. Check:
+   constraints/iam.managed.disableAccessPolicyBinding
+
+   If enforced, obtain the required approved exception
+   before attempting to create the UAP Policy Binding.
+
+4. Retrieve the default Cloud Build service account.
+
+5. Ensure the build identity has:
+   roles/run.builder
+
+6. Run local unit and syntax validation.
+
+7. Validate:
+   mcp-server/toolspec.json
+
+   Confirm every MCP tool contains:
+   inputSchema
+
+8. Deploy the authenticated MCP server to Cloud Run.
+
+9. Capture:
+   MCP_BASE_URL
+   MCP_URL
+
+10. Register the MCP server and tool metadata in Agent Registry.
+
+11. Capture:
+    MCP_REGISTRY_RESOURCE
+    MCP_SERVER_ID
+
+12. Register the Vertex AI destination actually used by the Runtime.
+
+    For the validated path:
+    aiplatform.mtls.googleapis.com
+
+13. Capture:
+    VERTEX_REGISTRY_RESOURCE
+    VERTEX_ENDPOINT_ID
+
+14. Create the Agent Gateway in:
+    AGENT_TO_ANYWHERE
+
+15. Create the IAP Authorization Extension initially in:
+    DRY_RUN
+
+16. Create and attach the Network Security REQUEST_AUTHZ policy.
+
+17. Validate the Agent Runtime configuration before deployment.
+
+18. Deploy the Agent Runtime with:
+    AGENT_IDENTITY
+    Agent-to-Anywhere Gateway association
+
+19. Capture and validate:
+    RUNTIME_RESOURCE
+    RUNTIME_ID
+
+20. Retrieve:
+    spec.effectiveIdentity
+
+    Store it as:
+    AGENT_EFFECTIVE_IDENTITY
+
+21. Derive:
+    AGENT_PRINCIPAL =
+    principal://${AGENT_EFFECTIVE_IDENTITY}
+
+22. Grant the Runtime Agent Principal:
+    Cloud Run Invoker
+    Agent Registry Viewer
+
+23. Grant resource-level:
+    roles/iap.egressor
+
+    separately on:
+    - registered MCP server
+    - registered Vertex endpoint
+
+24. Render the Unified Access Policy using:
+    ${AGENT_PRINCIPAL}
+
+25. Create the UAP with the four validated rules:
+    - allow MCP discovery / handshake
+    - allow registered ENDPOINT traffic
+    - allow read_customer_profile
+    - deny update_customer_profile
+
+26. Create the UAP Policy Binding.
+
+27. Allow sufficient IAM and policy propagation time.
+
+28. Switch the IAP Authorization Extension from:
+    DRY_RUN
+    to enforcement.
+
+29. Verify the Runtime-to-Gateway association through the Runtime API.
+
+30. Verify that the current Runtime effective identity still matches:
+    AGENT_EFFECTIVE_IDENTITY
+
+31. Start an interactive Playground session.
+
+32. Validate:
+    read_customer_profile
+    → ALLOWED
+    → EXECUTED
+
+33. Validate:
+    update_customer_profile
+    → DENIED
+    → NOT EXECUTED
+
+34. Correlate:
+    Agent Runtime events
+    Agent Gateway logs
+    IAP audit logs
+    Cloud Run logs
+
+35. Confirm that the denied update did not execute downstream.
+
+36. Record the known-good configuration before changing any additional control.
 ```
 
-Do not start by debugging all layers simultaneously.
+The fresh-project reproduction showed that several checks belong **before** Runtime authorization testing:
 
-Validate each control plane layer independently.
+```text
+Organization Policy preflight
+Cloud Run build identity
+MCP inputSchema validation
+Vertex destination registration
+```
+
+Skipping these checks can produce failures that look like Agent Gateway or UAP problems even though the authorization design itself is correct.
+
+The recommended troubleshooting principle is:
+
+```text
+validate prerequisites
+→ validate resource creation
+→ validate identity
+→ validate destination access
+→ validate policy
+→ validate behavior
+→ validate downstream evidence
+```
+
+Do not modify multiple control-plane layers simultaneously.
+
+When a failure occurs, preserve the last known-good layer and investigate the next dependency independently.
 
 ---
 
