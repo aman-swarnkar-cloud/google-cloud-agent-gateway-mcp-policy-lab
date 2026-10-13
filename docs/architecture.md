@@ -237,15 +237,67 @@ Agent Runtime is configured with:
 AGENT_IDENTITY
 ```
 
-The UAP therefore evaluates the deployed agent as its own security principal.
+Each deployed Runtime receives its own effective Agent Identity.
 
-The principal format used by the policy template is:
+The Runtime API exposes the identity as:
+
+```text
+spec.effectiveIdentity
+```
+
+in raw resource form:
+
+```text
+agents.global.<trust-domain>/resources/aiplatform/...
+```
+
+The architecture treats this value as:
+
+```text
+AGENT_EFFECTIVE_IDENTITY
+```
+
+IAM, IAP, and Unified Access Policy use the corresponding principal representation:
+
+```text
+AGENT_PRINCIPAL
+=
+principal://${AGENT_EFFECTIVE_IDENTITY}
+```
+
+Therefore:
+
+```text
+Runtime API representation
+→ AGENT_EFFECTIVE_IDENTITY
+
+IAM / IAP / UAP representation
+→ AGENT_PRINCIPAL
+```
+
+These two strings represent the same Agent Identity but are not interchangeable representations.
+
+The Unified Access Policy template uses:
 
 ```text
 ${AGENT_PRINCIPAL}
 ```
 
-This supports agent-specific least privilege rather than relying on one broadly shared identity.
+This allows authorization to target the specific deployed agent rather than a broadly shared runtime identity.
+
+The identity must be retrieved dynamically from the deployed Runtime.
+
+It should not be reconstructed from:
+
+```text
+project number
+organization ID
+Runtime ID
+```
+
+because the trust-domain representation can differ across environments.
+
+If the Runtime is recreated, the new Runtime receives a new effective Agent Identity and the associated IAM, IAP, and UAP references must be updated.
 
 ---
 
@@ -253,24 +305,58 @@ This supports agent-specific least privilege rather than relying on one broadly 
 
 Agent Registry provides governed destination and tool metadata.
 
-The lab registers the MCP server and its tools.
+The lab registers the MCP server together with its tool specification.
 
-The tool metadata represented in:
+Repository artifact:
 
 ```text
 mcp-server/toolspec.json
 ```
 
-contains:
+The registered tool metadata includes:
 
 ```text
 read_customer_profile
 update_customer_profile
 ```
 
-Registration does not itself grant authorization.
+Each registered MCP tool must also provide a valid:
 
-The distinction is:
+```text
+inputSchema
+```
+
+For this lab:
+
+```text
+read_customer_profile
+→ requires customer_id
+
+update_customer_profile
+→ requires customer_id
+→ accepts email
+```
+
+The architectural relationship is:
+
+```text
+MCP server implementation
++
+Agent Registry service registration
++
+tool metadata
++
+inputSchema
+→ governed MCP destination metadata
+```
+
+The static registry specification and the running MCP server are separate artifacts.
+
+A tool implemented by the MCP server does not automatically make an incomplete Agent Registry specification valid.
+
+Registration also does not grant execution permission.
+
+The distinction remains:
 
 ```text
 Registered
@@ -278,7 +364,33 @@ Registered
 Authorized
 ```
 
-A registered tool can still be denied by UAP.
+and:
+
+```text
+Tool discoverability
+≠
+Tool execution authority
+```
+
+The validated outcome is:
+
+```text
+read_customer_profile
+→ registered
+→ authorized
+→ executed
+```
+
+while:
+
+```text
+update_customer_profile
+→ registered
+→ denied by UAP
+→ not executed
+```
+
+Agent Registry therefore establishes the governed destination and tool metadata that the authorization layer can evaluate, while UAP determines whether a specific operation may execute.
 
 ---
 
@@ -286,14 +398,9 @@ A registered tool can still be denied by UAP.
 
 Gemini model inference is also governed through the Agent Gateway.
 
-The validated UAP condition for registered Vertex endpoints is:
+The Runtime does not communicate only with the MCP destination.
 
-```text
-destination.is_registered == true &&
-destination.agent_registry.resource_type == 'ENDPOINT'
-```
-
-Validated flow:
+The model call itself traverses the governed egress path:
 
 ```text
 Agent Runtime
@@ -309,7 +416,81 @@ Registered Vertex AI endpoint
 Gemini
 ```
 
-This traffic must remain authorized for the agent to perform reasoning before selecting MCP tools.
+For the validated environment, the Runtime used:
+
+```text
+aiplatform.mtls.googleapis.com
+```
+
+That destination must be represented in Agent Registry when Agent-to-Anywhere enforcement is active.
+
+The validated UAP condition for registered Vertex endpoints is:
+
+```text
+destination.is_registered == true &&
+destination.agent_registry.resource_type == 'ENDPOINT'
+```
+
+Registration alone is not sufficient.
+
+The Runtime Agent Principal also requires resource-level:
+
+```text
+roles/iap.egressor
+```
+
+on the registered Vertex endpoint.
+
+The complete governed model-inference relationship is:
+
+```text
+Vertex hostname used by Runtime
+→ registered in Agent Registry
+→ Agent Principal has IAP egress on that endpoint
+→ UAP allows registered ENDPOINT traffic
+→ Gemini inference proceeds through Agent Gateway
+```
+
+A deliberate negative test was performed with the MCP server registered but the Vertex destination left unregistered.
+
+The Agent Gateway and Agent Runtime could still be created.
+
+MCP discovery traffic could also be observed.
+
+However, model execution failed with:
+
+```text
+403 Forbidden
+Egress request is not authorized.
+```
+
+Gateway evidence showed:
+
+```text
+hostname = aiplatform.mtls.googleapis.com
+registryResource = null
+authorization result = DENIED
+```
+
+This demonstrates an important architectural distinction:
+
+```text
+Vertex registration is not required merely to create the Gateway or Runtime.
+```
+
+but:
+
+```text
+Vertex registration is required for governed Gemini traffic under Agent-to-Anywhere enforcement.
+```
+
+Do not treat this failure as an MCP authorization problem.
+
+The denial occurs on the model-inference path before the intended MCP tool execution can complete.
+
+Also do not register every denied hostname observed in Gateway logs.
+
+Only destinations that are intentionally part of the governed application path should be added to Agent Registry.
 
 ---
 
